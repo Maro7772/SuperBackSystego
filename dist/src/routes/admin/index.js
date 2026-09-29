@@ -1,0 +1,28 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.route = void 0;
+const express_1 = require("express");
+const auth_1 = __importDefault(require("./auth"));
+const CouponRoutes_1 = __importDefault(require("./CouponRoutes"));
+const PackageRoutes_1 = __importDefault(require("./PackageRoutes"));
+const clientRoutes_1 = __importDefault(require("./clientRoutes"));
+const paymentMethodRoutes_1 = __importDefault(require("./paymentMethodRoutes"));
+const ThemesRoutes_1 = __importDefault(require("./ThemesRoutes"));
+const ThemeCategoryRoutes_1 = __importDefault(require("./ThemeCategoryRoutes"));
+const dbGateway_1 = __importDefault(require("../../utils/dbGateway"));
+//import { authenticated } from "../../middlewares/authenticated";
+//import {  authorizeRoles } from "../../middlewares/authorized";
+exports.route = (0, express_1.Router)();
+exports.route.use("/auth", auth_1.default);
+// route.use(authenticated,authorizeRoles("admin"));
+exports.route.use("/coupons", CouponRoutes_1.default);
+exports.route.use("/packages", PackageRoutes_1.default);
+exports.route.use("/clients", clientRoutes_1.default);
+exports.route.use("/payment-methods", paymentMethodRoutes_1.default);
+exports.route.use("/themes", ThemesRoutes_1.default);
+exports.route.use("/theme-categories", ThemeCategoryRoutes_1.default);
+exports.route.use("/db", dbGateway_1.default);
+exports.default = exports.route;

@@ -1,0 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const themesController_1 = require("../../controller/admin/themesController");
+const router = (0, express_1.Router)();
+router.get('/', themesController_1.getAllThemes);
+router.get('/:id', themesController_1.getThemeById);
+router.get('/slug/:slug', themesController_1.getThemeBySlug);
+router.post('/', themesController_1.createTheme);
+router.post('/bulk', themesController_1.bulkCreateThemes);
+router.put('/:id', themesController_1.updateTheme);
+router.delete('/:id', themesController_1.deleteTheme);
+exports.default = router;
