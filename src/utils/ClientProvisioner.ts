@@ -107,6 +107,17 @@ export async function provisionNewClient(
         // Plesk Passenger restarts the app when a tmp/restart.txt file is touched
         await triggerNodeRestart(backendDestDir);
 
+        // 8. Install Let's Encrypt SSL certificates for Frontend & Backend subdomains
+        console.log(`[Provisioning] Waiting 5 seconds before installing SSL certificates...`);
+        const { setTimeout } = require('timers/promises');
+        await setTimeout(5000);
+
+        console.log(`[Provisioning] Installing SSL certificate for Frontend: ${frontendSubdomainUrl}...`);
+        await installSslCertificate(frontendSubdomainUrl);
+
+        console.log(`[Provisioning] Installing SSL certificate for Backend: ${backendSubdomainUrl}...`);
+        await installSslCertificate(backendSubdomainUrl);
+
         console.log(`[Provisioning] Successfully completed for ${clientName}!`);
 
         return {
@@ -131,7 +142,7 @@ export async function provisionNewClient(
  * Uses the legacy letsencrypt extension which is installed on the Plesk server.
  * Non-fatal — logs a warning if it fails so provisioning can continue.
  */
-async function installSslCertificate(subdomainUrl: string) {
+export async function installSslCertificate(subdomainUrl: string) {
     try {
         console.log(`[Provisioning] Installing Let's Encrypt SSL for ${subdomainUrl}...`);
         await executePleskCli('extension', [

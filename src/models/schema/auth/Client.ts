@@ -26,6 +26,8 @@ interface IClient {
     text: string;
     created_at: Date;
   }>;
+  provisioning_status?: "pending" | "in_progress" | "completed" | "failed";
+  provisioning_error?: string;
   last_payment_date?: Date;
   subscription_end_date?: Date;
   created_at?: Date;
@@ -73,6 +75,12 @@ const ClientSchema = new Schema<IClient>(
         created_at: { type: Date, default: Date.now },
       },
     ],
+    provisioning_status: {
+      type: String,
+      enum: ["pending", "in_progress", "completed", "failed"],
+      default: "pending",
+    },
+    provisioning_error: { type: String },
     last_payment_date: { type: Date, default: Date.now },
     subscription_end_date: { type: Date },
   },

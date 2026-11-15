@@ -16,6 +16,7 @@ import {
   renewClientSubscription,
   setClientSubscriptionEnd,
   seedCashierRoleForExistingClients,
+  retryProvisionClient,
 } from "../../controller/admin/ClientController";
 import {
   installClientDependencies,
@@ -52,6 +53,7 @@ router.patch("/:id/subscription-end", setClientSubscriptionEnd);
 router.delete("/:id", deleteClient);
 router.post("/:id/rebuild-frontend", rebuildClientFrontend);
 router.post("/:id/deploy-backend", deployClientBackend);
+router.post("/:id/retry-provisioning", retryProvisionClient);
 router.post("/:id/regenerate-env", regenerateClientEnv);
 router.post("/:id/install-ssl", installClientSsl);
 router.post("/:id/install-dependencies", installClientDependencies);

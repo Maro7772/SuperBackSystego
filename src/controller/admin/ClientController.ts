@@ -256,55 +256,65 @@ export const createClient = asyncHandler(async (req, res) => {
     console.error("Failed to generate tenant API key:", apiKeyError.message);
   }
 
-  let frontendUrl: string;
-  let backendApiUrl: string;
-  try {
-    const provisionResult = await provisionNewClient(
-      sanitizedSubdomain,
-      {
-        dbName: dbName,
-        dbUser: process.env.MONGO_USER || "admin",
-        dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
-      },
-      logoBase64,
-      rawApiKey,
-    );
-
-    frontendUrl = provisionResult.frontendUrl;
-    backendApiUrl = provisionResult.backendApiUrl;
-    console.log(
-      `Subdomains provisioned: Frontend=${frontendUrl}, Backend=${backendApiUrl}`,
-    );
-  } catch (error: any) {
-    console.error("Failed to provision client in Plesk:", error.message);
-    await ClientModel.findByIdAndDelete(client._id);
-    try {
-      await mongoose.connection
-        .useDb(dbName, { useCache: true })
-        .dropDatabase();
-    } catch (dbError) {
-      console.error("Failed to rollback database:", dbError);
-    }
-
-    res.status(500).json({
-      success: false,
-      message: `Failed to provision client in Plesk: ${error.message}`,
-    });
-    return;
-  }
+  const parentDomain = process.env.PLESK_PARENT_DOMAIN || "systego.net";
+  const expectedFrontendUrl = `https://${sanitizedSubdomain}.${parentDomain}`;
 
   client.db_name = dbName;
-  client.subdomain_url = frontendUrl;
+  client.subdomain_url = expectedFrontendUrl;
+  client.provisioning_status = "in_progress";
   await client.save();
+
+  // Run heavy provisioning asynchronously in the background so the HTTP request
+  // returns immediately and Nginx / Plesk proxy timeouts or service reloads do NOT drop the connection!
+  setImmediate(async () => {
+    console.log(
+      `[Provisioning] Background provisioning started for client: ${client.company_name} (${sanitizedSubdomain})`,
+    );
+    try {
+      const provisionResult = await provisionNewClient(
+        sanitizedSubdomain,
+        {
+          dbName: dbName,
+          dbUser: process.env.MONGO_USER || "admin",
+          dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
+        },
+        logoBase64,
+        rawApiKey,
+      );
+
+      console.log(
+        `[Provisioning] Background provisioning completed: Frontend=${provisionResult.frontendUrl}, Backend=${provisionResult.backendApiUrl}`,
+      );
+
+      await ClientModel.findByIdAndUpdate(client._id, {
+        provisioning_status: "completed",
+        subdomain_url: provisionResult.frontendUrl,
+      });
+    } catch (error: any) {
+      console.error(
+        `[Provisioning] Background provisioning failed for ${client.company_name}:`,
+        error.message,
+      );
+      await ClientModel.findByIdAndUpdate(client._id, {
+        provisioning_status: "failed",
+        provisioning_error: error.message || String(error),
+      });
+    }
+  });
 
   const clientResponse = client.toObject() as any;
   delete clientResponse.admin_password;
   delete clientResponse.password;
   clientResponse.db_name = dbName;
+  clientResponse.subdomain_url = expectedFrontendUrl;
 
   return SuccessResponse(
     res,
-    { message: "Client created successfully", data: clientResponse },
+    {
+      message:
+        "Client created successfully. Subdomain and backend deployment are running in the background.",
+      data: clientResponse,
+    },
     201,
   );
 });
@@ -1064,3 +1074,85 @@ export const seedCashierRoleForExistingClients = asyncHandler(
     );
   }
 );
+
+export const retryProvisionClient = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const client = await ClientModel.findById(id);
+  if (!client) {
+    throw new NotFound("Client not found");
+  }
+
+  if (!client.subdomain) {
+    throw new BadRequest("Client does not have a subdomain configured");
+  }
+
+  const sanitizedSubdomain = sanitizeSubdomainName(client.subdomain);
+  const dbName = client.db_name || `sc_${client._id}`;
+
+  client.provisioning_status = "in_progress";
+  client.provisioning_error = undefined;
+  await client.save();
+
+  // Find or generate API key
+  let rawApiKey: string | undefined;
+  const existingApiKeyDoc = await TenantApiKeyModel.findOne({
+    client_id: client._id,
+    active: true,
+  });
+
+  if (!existingApiKeyDoc) {
+    rawApiKey = `sk_${crypto.randomUUID()}_${crypto.randomBytes(16).toString("hex")}`;
+    const hashedKey = crypto
+      .createHash("sha256")
+      .update(rawApiKey)
+      .digest("hex");
+
+    await TenantApiKeyModel.create({
+      client_id: client._id,
+      hashedKey,
+      label: "default",
+      active: true,
+    });
+  }
+
+  setImmediate(async () => {
+    try {
+      const provisionResult = await provisionNewClient(
+        sanitizedSubdomain,
+        {
+          dbName,
+          dbUser: process.env.MONGO_USER || "admin",
+          dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
+        },
+        client.logoBase64,
+        rawApiKey,
+      );
+
+      await ClientModel.findByIdAndUpdate(client._id, {
+        provisioning_status: "completed",
+        subdomain_url: provisionResult.frontendUrl,
+      });
+      console.log(
+        `[Provisioning] Manual retry provisioning completed for ${client.company_name}`,
+      );
+    } catch (err: any) {
+      console.error(
+        `[Provisioning] Manual retry provisioning failed for ${client.company_name}:`,
+        err.message,
+      );
+      await ClientModel.findByIdAndUpdate(client._id, {
+        provisioning_status: "failed",
+        provisioning_error: err.message || String(err),
+      });
+    }
+  });
+
+  return SuccessResponse(
+    res,
+    {
+      message: "Client provisioning restarted in the background",
+      data: client,
+    },
+    200,
+  );
+});

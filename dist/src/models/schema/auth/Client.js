@@ -47,6 +47,12 @@ const ClientSchema = new mongoose_1.Schema({
             created_at: { type: Date, default: Date.now },
         },
     ],
+    provisioning_status: {
+        type: String,
+        enum: ["pending", "in_progress", "completed", "failed"],
+        default: "pending",
+    },
+    provisioning_error: { type: String },
     last_payment_date: { type: Date, default: Date.now },
     subscription_end_date: { type: Date },
 }, { timestamps: true });

@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.testSslInstallation = exports.diagnoseClient = exports.installClientDependencies = void 0;
 exports.provisionNewClient = provisionNewClient;
+exports.installSslCertificate = installSslCertificate;
 exports.generateBackendEnv = generateBackendEnv;
 exports.rebuildFrontendForClient = rebuildFrontendForClient;
 exports.rebuildFrontend = rebuildFrontend;
@@ -96,6 +97,14 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
         // 7. Trigger a restart for the Node.js backend
         // Plesk Passenger restarts the app when a tmp/restart.txt file is touched
         await triggerNodeRestart(backendDestDir);
+        // 8. Install Let's Encrypt SSL certificates for Frontend & Backend subdomains
+        console.log(`[Provisioning] Waiting 5 seconds before installing SSL certificates...`);
+        const { setTimeout } = require('timers/promises');
+        await setTimeout(5000);
+        console.log(`[Provisioning] Installing SSL certificate for Frontend: ${frontendSubdomainUrl}...`);
+        await installSslCertificate(frontendSubdomainUrl);
+        console.log(`[Provisioning] Installing SSL certificate for Backend: ${backendSubdomainUrl}...`);
+        await installSslCertificate(backendSubdomainUrl);
         console.log(`[Provisioning] Successfully completed for ${clientName}!`);
         return {
             frontendUrl: `https://${frontendSubdomainUrl}`,

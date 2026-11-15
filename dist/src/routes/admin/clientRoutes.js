@@ -26,6 +26,7 @@ router.patch("/:id/subscription-end", ClientController_1.setClientSubscriptionEn
 router.delete("/:id", ClientController_1.deleteClient);
 router.post("/:id/rebuild-frontend", ClientController_1.rebuildClientFrontend);
 router.post("/:id/deploy-backend", ClientController_1.deployClientBackend);
+router.post("/:id/retry-provisioning", ClientController_1.retryProvisionClient);
 router.post("/:id/regenerate-env", ClientController_1.regenerateClientEnv);
 router.post("/:id/install-ssl", ClientController_1.installClientSsl);
 router.post("/:id/install-dependencies", ClientProvisioner_1.installClientDependencies);
