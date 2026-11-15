@@ -901,6 +901,36 @@ const diagnoseClient = async (req, res) => {
             diagnostics.frontendDirectoryExists = false;
             diagnostics.frontendError = feErr.message;
         }
+        // Check CLI commands and sharp
+        try {
+            const { host, port, apiKey } = require('./PleskService').getPleskConfig ? require('./PleskService').getPleskConfig() : { host: process.env.PLESK_HOST, port: process.env.PLESK_PORT, apiKey: process.env.PLESK_API_KEY };
+            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+            const res = await axios.get(`https://${host}:${port}/api/v2/cli/commands/`, {
+                headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
+                httpsAgent,
+            });
+            diagnostics.availableCliCommands = Array.isArray(res.data) ? res.data.filter((c) => c.includes('node') || c.includes('site') || c.includes('subdomain') || c.includes('domain')) : res.data;
+        }
+        catch (cliErr) {
+            diagnostics.availableCliCommandsError = cliErr.message;
+        }
+        try {
+            const masterSharp = '/var/www/vhosts/systego.net/master-builds/backend-latest/node_modules/sharp';
+            await promises_1.default.stat(masterSharp);
+            diagnostics.masterSharpExists = true;
+        }
+        catch (e) {
+            diagnostics.masterSharpExists = false;
+            diagnostics.masterSharpError = e.message;
+        }
+        try {
+            const janssenSharp = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules/sharp';
+            await promises_1.default.stat(janssenSharp);
+            diagnostics.janssenSharpExists = true;
+        }
+        catch {
+            diagnostics.janssenSharpExists = false;
+        }
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
             diagnostics.fixResults = {};
