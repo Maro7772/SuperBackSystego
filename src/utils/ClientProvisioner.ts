@@ -118,20 +118,35 @@ export async function provisionNewClient(
             console.warn(`[Provisioning] Could not copy node_modules cache: ${nmErr.message}`);
         }
 
-        // 8. Run npm install (npm i)
-        console.log(`[Provisioning] Running npm install in ${backendDestDir}...`);
+        // 8. Ensure backend dependencies (node_modules) are ready
         try {
-            await execAsync('npm install', { cwd: backendDestDir });
-            console.log(`[Provisioning] ✅ npm install completed successfully`);
+            const nmPath = path.join(backendDestDir, 'node_modules');
+            const nmExists = await fs.access(nmPath).then(() => true).catch(() => false);
+            if (!nmExists) {
+                console.log(`[Provisioning] node_modules not found, running npm install --omit=dev in ${backendDestDir}...`);
+                await execAsync('npm install --omit=dev', { cwd: backendDestDir });
+                console.log(`[Provisioning] ✅ npm install completed successfully`);
+            } else {
+                console.log(`[Provisioning] ✅ node_modules already copied from master template`);
+            }
         } catch (npmErr: any) {
             console.warn(`[Provisioning] npm install warning: ${npmErr.message}`);
         }
 
-        // 9. Run npm run build
-        console.log(`[Provisioning] Running npm run build in ${backendDestDir}...`);
+        // 9. Run npm run build only if TypeScript source build is needed
         try {
-            await execAsync('npm run build', { cwd: backendDestDir });
-            console.log(`[Provisioning] ✅ npm run build completed successfully`);
+            const tsconfigPath = path.join(backendDestDir, 'tsconfig.json');
+            const hasTsConfig = await fs.access(tsconfigPath).then(() => true).catch(() => false);
+            const serverJsPath = path.join(backendDestDir, 'dist', 'src', 'server.js');
+            const hasDist = await fs.access(serverJsPath).then(() => true).catch(() => false);
+
+            if (hasTsConfig && !hasDist) {
+                console.log(`[Provisioning] Running npm run build in ${backendDestDir}...`);
+                await execAsync('npm run build', { cwd: backendDestDir });
+                console.log(`[Provisioning] ✅ npm run build completed successfully`);
+            } else {
+                console.log(`[Provisioning] ✅ Pre-compiled dist/src/server.js is ready, skipping npm run build`);
+            }
         } catch (buildErr: any) {
             console.warn(`[Provisioning] npm run build warning: ${buildErr.message}`);
         }
