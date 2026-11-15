@@ -107,6 +107,91 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
         catch (feDocErr) {
             console.warn(`[Provisioning] Warning updating frontend Document Root: ${feDocErr.message}`);
         }
+        // 4.9. Enable Node.js for Frontend if package.json or server.js exist
+        try {
+            const hasFeServerJs = await promises_1.default.access(path_1.default.join(frontendDestDir, 'server.js')).then(() => true).catch(() => false);
+            const hasFePkgJson = await promises_1.default.access(path_1.default.join(frontendDestDir, 'package.json')).then(() => true).catch(() => false);
+            if (hasFeServerJs || hasFePkgJson) {
+                console.log(`[Provisioning] Enabling Node.js for Frontend: ${frontendSubdomainUrl}...`);
+                try {
+                    await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
+                    console.log(`[Provisioning] ✅ Frontend Node.js enabled via Plesk XML API`);
+                }
+                catch (feXmlErr) {
+                    console.warn(`[Provisioning] XML enableNodeJs for frontend failed: ${feXmlErr.message}. Trying CLI...`);
+                    try {
+                        await (0, PleskService_1.executePleskCli)('extension', [
+                            '--exec', 'nodejs',
+                            '--enable',
+                            '-domain', frontendSubdomainUrl
+                        ]);
+                        console.log(`[Provisioning] ✅ Frontend Node.js enabled via Plesk CLI`);
+                    }
+                    catch (feCliErr) {
+                        console.warn(`[Provisioning] Frontend enableNodeJs warning: ${feCliErr.message}`);
+                    }
+                }
+                try {
+                    await (0, PleskService_1.executePleskCli)('extension', [
+                        '--exec', 'nodejs',
+                        '--update',
+                        '-domain', frontendSubdomainUrl,
+                        '-startup-file', 'server.js',
+                        '-app-mode', 'production'
+                    ]);
+                    console.log(`[Provisioning] ✅ Configured frontend startup-file server.js in Plesk`);
+                }
+                catch (feStartupErr) {
+                    console.warn(`[Provisioning] Frontend startup-file warning: ${feStartupErr.message}`);
+                }
+                // Copy node_modules from master frontend if available, otherwise npm install
+                try {
+                    const masterFeNm = path_1.default.join(MASTER_FRONTEND_DIR, 'node_modules');
+                    const hasMasterFeNm = await promises_1.default.access(masterFeNm).then(() => true).catch(() => false);
+                    const clientFeNm = path_1.default.join(frontendDestDir, 'node_modules');
+                    const hasClientFeNm = await promises_1.default.access(clientFeNm).then(() => true).catch(() => false);
+                    if (!hasClientFeNm) {
+                        if (hasMasterFeNm) {
+                            console.log(`[Provisioning] Copying node_modules cache for frontend...`);
+                            await execAsync(`cp -a ${masterFeNm} ${frontendDestDir}/`);
+                        }
+                        else {
+                            console.log(`[Provisioning] Running npm install in frontend ${frontendDestDir}...`);
+                            await execAsync('npm install', { cwd: frontendDestDir });
+                        }
+                        console.log(`[Provisioning] ✅ Frontend dependencies ready`);
+                    }
+                }
+                catch (feNmErr) {
+                    console.warn(`[Provisioning] Frontend node_modules warning: ${feNmErr.message}`);
+                }
+                // Run npm run build if needed
+                try {
+                    const hasDotNext = await promises_1.default.access(path_1.default.join(frontendDestDir, '.next')).then(() => true).catch(() => false);
+                    if (!hasDotNext) {
+                        console.log(`[Provisioning] Running npm run build in frontend ${frontendDestDir}...`);
+                        await execAsync('npm run build', { cwd: frontendDestDir });
+                        console.log(`[Provisioning] ✅ Frontend npm run build completed`);
+                    }
+                }
+                catch (feBuildErr) {
+                    console.warn(`[Provisioning] Frontend npm run build warning: ${feBuildErr.message}`);
+                }
+                // Fix frontend permissions after npm install/build
+                try {
+                    await execAsync(`chmod -R 755 ${frontendDestDir}`);
+                    await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
+                }
+                catch (fePermErr) {
+                    console.warn(`[Provisioning] Could not fix frontend permissions after install: ${fePermErr.message}`);
+                }
+                // Trigger frontend restart
+                await triggerNodeRestart(frontendDestDir);
+            }
+        }
+        catch (feNodeErr) {
+            console.warn(`[Provisioning] Frontend Node.js setup warning: ${feNodeErr.message}`);
+        }
         // 5. Copy Backend template (Node.js TypeScript dist folder)
         console.log(`[Provisioning] Copying backend files to ${backendDestDir}`);
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
@@ -795,7 +880,7 @@ const diagnoseClient = async (req, res) => {
             const feStat = await promises_1.default.stat(frontendDestDir);
             diagnostics.frontendDirMode = (feStat.mode & 0o777).toString(8);
             diagnostics.frontendFileChecks = {};
-            for (const f of ['index.html', '.htaccess', 'assets']) {
+            for (const f of ['index.html', '.htaccess', 'assets', 'package.json', 'server.js', '.next']) {
                 try {
                     const st = await promises_1.default.stat(path_1.default.join(frontendDestDir, f));
                     diagnostics.frontendFileChecks[f] = st.isDirectory() ? 'directory exists' : `file exists (${st.size} bytes, mode: ${(st.mode & 0o777).toString(8)})`;
@@ -803,6 +888,13 @@ const diagnoseClient = async (req, res) => {
                 catch {
                     diagnostics.frontendFileChecks[f] = 'MISSING';
                 }
+            }
+            try {
+                const pkg = JSON.parse(await promises_1.default.readFile(path_1.default.join(frontendDestDir, 'package.json'), 'utf-8'));
+                diagnostics.frontendPackageScripts = pkg.scripts;
+            }
+            catch {
+                diagnostics.frontendPackageScripts = 'MISSING';
             }
         }
         catch (feErr) {
@@ -831,7 +923,56 @@ const diagnoseClient = async (req, res) => {
             catch (siteErr) {
                 diagnostics.fixResults.frontendSiteWwwRoot = `Error: ${siteErr.message}`;
             }
-            // 2. Fix Backend Permissions & Document Root
+            // 2. Enable Node.js on Frontend (Next.js server.js)
+            try {
+                try {
+                    await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
+                }
+                catch {
+                    await (0, PleskService_1.executePleskCli)('extension', [
+                        '--exec', 'nodejs',
+                        '--enable',
+                        '-domain', `${clientName}.systego.net`
+                    ]);
+                }
+                await (0, PleskService_1.executePleskCli)('extension', [
+                    '--exec', 'nodejs',
+                    '--update',
+                    '-domain', `${clientName}.systego.net`,
+                    '-startup-file', 'server.js',
+                    '-app-mode', 'production'
+                ]);
+                diagnostics.fixResults.frontendNodeJs = "Enabled with startup-file server.js";
+            }
+            catch (fnErr) {
+                diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
+            }
+            // 3. Fix Backend Modules (Restore sharp by copying master node_modules)
+            try {
+                const masterNodeModules = '/var/www/vhosts/systego.net/master-builds/backend-latest/node_modules';
+                await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
+                diagnostics.fixResults.backendNodeModules = "Copied clean node_modules from master cache";
+            }
+            catch (bnmErr) {
+                diagnostics.fixResults.backendNodeModules = `Error: ${bnmErr.message}`;
+            }
+            // 4. Fix Backend MongoDB port in .env (change 27017 to 32768)
+            try {
+                const envPath = path_1.default.join(backendDestDir, '.env');
+                let envContent = await promises_1.default.readFile(envPath, 'utf-8');
+                if (envContent.includes('127.0.0.1:27017')) {
+                    envContent = envContent.replace(/127\.0\.0\.1:27017/g, '127.0.0.1:32768');
+                    await promises_1.default.writeFile(envPath, envContent, 'utf-8');
+                    diagnostics.fixResults.backendEnvPort = "Updated port 27017 -> 32768";
+                }
+                else {
+                    diagnostics.fixResults.backendEnvPort = "Already port 32768";
+                }
+            }
+            catch (envFixErr) {
+                diagnostics.fixResults.backendEnvPort = `Error: ${envFixErr.message}`;
+            }
+            // 5. Fix Backend Permissions & Document Root
             try {
                 await execAsync(`chmod -R 755 ${backendDestDir}`);
                 await execAsync(`chown -R systego:psacln ${backendDestDir}`);
@@ -849,6 +990,15 @@ const diagnoseClient = async (req, res) => {
             }
             catch (bsErr) {
                 diagnostics.fixResults.backendSiteWwwRoot = `Error: ${bsErr.message}`;
+            }
+            // 6. Restart both frontend and backend Passenger processes
+            try {
+                await triggerNodeRestart(frontendDestDir);
+                await triggerNodeRestart(backendDestDir);
+                diagnostics.fixResults.restarted = true;
+            }
+            catch (reErr) {
+                diagnostics.fixResults.restarted = `Error: ${reErr.message}`;
             }
         }
         return res.json({ success: true, data: diagnostics });
