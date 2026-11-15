@@ -998,6 +998,12 @@ export const diagnoseClient = async (req: Request, res: Response) => {
             diagnostics.janssenSharpExists = false;
         }
 
+        try {
+            diagnostics.nodejsModuleScripts = await fs.readdir('/opt/psa/admin/plib/modules/nodejs/scripts');
+        } catch (e: any) {
+            diagnostics.nodejsModuleScripts = e.message;
+        }
+
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
             diagnostics.fixResults = {};
