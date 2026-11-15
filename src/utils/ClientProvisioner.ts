@@ -95,11 +95,22 @@ export async function provisionNewClient(
         console.log(`[Provisioning] Injecting dynamic API URLs into React bundles...`);
         await injectApiUrlIntoBundle(frontendDestDir, `https://${backendSubdomainUrl}`);
 
-        // 4.8. Fix frontend permissions
+        // 4.8. Fix frontend permissions and document root
         try {
+            await execAsync(`chmod -R 755 ${frontendDestDir}`);
             await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
         } catch (permErr: any) {
             console.warn(`[Provisioning] Could not fix frontend permissions: ${permErr.message}`);
+        }
+
+        try {
+            await executePleskCli('site', [
+                '--update', frontendSubdomainUrl,
+                '-www-root', `subdomains/${clientName}`
+            ]);
+            console.log(`[Provisioning] ✅ Configured frontend Document Root subdomains/${clientName} in Plesk`);
+        } catch (feDocErr: any) {
+            console.warn(`[Provisioning] Warning updating frontend Document Root: ${feDocErr.message}`);
         }
 
         // 5. Copy Backend template (Node.js TypeScript dist folder)
@@ -233,8 +244,9 @@ try {
             console.warn(`[Provisioning] Could not update nodejs startup-file in Plesk: ${updateErr.message}`);
         }
 
-        // 15. Fix file ownership for Plesk Passenger
+        // 15. Fix file ownership and permissions for Plesk Passenger
         try {
+            await execAsync(`chmod -R 755 ${backendDestDir}`);
             await execAsync(`chown -R systego:psacln ${backendDestDir}`);
         } catch (chownErr: any) {
             console.warn(`[Provisioning] Could not fix backend file ownership: ${chownErr.message}`);
@@ -786,7 +798,7 @@ export const installClientDependencies = async (req: Request, res: Response) => 
  * Use this to debug "Incomplete response" errors when you don't have terminal access.
  */
 export const diagnoseClient = async (req: Request, res: Response) => {
-    const { clientName } = req.body;
+    const { clientName, fix } = req.body;
 
     if (!clientName) {
         return res.status(400).json({ success: false, message: "clientName is required" });
@@ -794,67 +806,117 @@ export const diagnoseClient = async (req: Request, res: Response) => {
 
     const PLESK_VHOSTS_DIR = '/var/www/vhosts/systego.net/subdomains';
     const backendDestDir = path.join(PLESK_VHOSTS_DIR, `api-${clientName}`);
+    const frontendDestDir = path.join(PLESK_VHOSTS_DIR, clientName);
 
-    const diagnostics: Record<string, any> = { clientName, backendDestDir };
+    const diagnostics: Record<string, any> = { clientName, backendDestDir, frontendDestDir };
 
     try {
-        // 1. Check if backend directory exists
+        // --- BACKEND CHECKS ---
         try {
             await fs.access(backendDestDir);
-            diagnostics.directoryExists = true;
-        } catch {
-            diagnostics.directoryExists = false;
-            return res.json({ success: true, data: diagnostics });
-        }
+            diagnostics.backendDirectoryExists = true;
 
-        // 2. List top-level files/folders
-        try {
             const entries = await fs.readdir(backendDestDir);
-            diagnostics.contents = entries;
-        } catch (e: any) {
-            diagnostics.contents = `Error: ${e.message}`;
-        }
+            diagnostics.backendContents = entries;
 
-        // 3. Check key files exist
-        const keyFiles = ['app.js', '.env', 'dist/src/server.js', 'node_modules', 'package.json'];
-        diagnostics.fileChecks = {};
-        for (const file of keyFiles) {
-            try {
-                const stat = await fs.stat(path.join(backendDestDir, file));
-                diagnostics.fileChecks[file] = stat.isDirectory() ? 'directory exists' : `file exists (${stat.size} bytes)`;
-            } catch {
-                diagnostics.fileChecks[file] = 'MISSING';
+            const keyFiles = ['app.js', '.env', 'dist/src/server.js', 'node_modules', 'package.json'];
+            diagnostics.fileChecks = {};
+            for (const file of keyFiles) {
+                try {
+                    const stat = await fs.stat(path.join(backendDestDir, file));
+                    diagnostics.fileChecks[file] = stat.isDirectory() ? 'directory exists' : `file exists (${stat.size} bytes)`;
+                } catch {
+                    diagnostics.fileChecks[file] = 'MISSING';
+                }
             }
+
+            try {
+                const errorLog = await fs.readFile(path.join(backendDestDir, 'startup-error.log'), 'utf-8');
+                diagnostics.startupErrorLog = errorLog;
+            } catch {
+                diagnostics.startupErrorLog = 'No startup-error.log found';
+            }
+
+            try {
+                const envContent = await fs.readFile(path.join(backendDestDir, '.env'), 'utf-8');
+                diagnostics.envFile = envContent.split('\n').map(line => {
+                    if (line.startsWith('#') || !line.includes('=')) return line;
+                    const [key] = line.split('=');
+                    return `${key}=***`;
+                }).join('\n');
+            } catch {
+                diagnostics.envFile = 'MISSING';
+            }
+        } catch {
+            diagnostics.backendDirectoryExists = false;
         }
 
-        // 4. Read startup-error.log (the most important bit!)
+        // --- FRONTEND CHECKS ---
         try {
-            const errorLog = await fs.readFile(path.join(backendDestDir, 'startup-error.log'), 'utf-8');
-            diagnostics.startupErrorLog = errorLog;
-        } catch {
-            diagnostics.startupErrorLog = 'No startup-error.log found (app may not have crashed, or app.js shim is old)';
+            await fs.access(frontendDestDir);
+            diagnostics.frontendDirectoryExists = true;
+
+            const feEntries = await fs.readdir(frontendDestDir);
+            diagnostics.frontendContents = feEntries;
+
+            const feStat = await fs.stat(frontendDestDir);
+            diagnostics.frontendDirMode = (feStat.mode & 0o777).toString(8);
+
+            diagnostics.frontendFileChecks = {};
+            for (const f of ['index.html', '.htaccess', 'assets']) {
+                try {
+                    const st = await fs.stat(path.join(frontendDestDir, f));
+                    diagnostics.frontendFileChecks[f] = st.isDirectory() ? 'directory exists' : `file exists (${st.size} bytes, mode: ${(st.mode & 0o777).toString(8)})`;
+                } catch {
+                    diagnostics.frontendFileChecks[f] = 'MISSING';
+                }
+            }
+        } catch (feErr: any) {
+            diagnostics.frontendDirectoryExists = false;
+            diagnostics.frontendError = feErr.message;
         }
 
-        // 5. Read the .env (mask sensitive values)
-        try {
-            const envContent = await fs.readFile(path.join(backendDestDir, '.env'), 'utf-8');
-            // Show variable names but mask values for security
-            const maskedEnv = envContent.split('\n').map(line => {
-                if (line.startsWith('#') || !line.includes('=')) return line;
-                const [key] = line.split('=');
-                return `${key}=***`;
-            }).join('\n');
-            diagnostics.envFile = maskedEnv;
-        } catch {
-            diagnostics.envFile = 'MISSING';
-        }
+        // --- AUTO-FIX IF REQUESTED ---
+        if (fix) {
+            diagnostics.fixResults = {};
 
-        // 6. Read app.js content
-        try {
-            const appJs = await fs.readFile(path.join(backendDestDir, 'app.js'), 'utf-8');
-            diagnostics.appJsContent = appJs;
-        } catch {
-            diagnostics.appJsContent = 'MISSING';
+            // 1. Fix Frontend Permissions & Document Root
+            try {
+                await execAsync(`chmod -R 755 ${frontendDestDir}`);
+                await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
+                diagnostics.fixResults.frontendPermissions = "chmod 755 & chown psacln applied";
+            } catch (pErr: any) {
+                diagnostics.fixResults.frontendPermissions = `Error: ${pErr.message}`;
+            }
+
+            try {
+                await executePleskCli('site', [
+                    '--update', `${clientName}.systego.net`,
+                    '-www-root', `subdomains/${clientName}`
+                ]);
+                diagnostics.fixResults.frontendSiteWwwRoot = `Configured to subdomains/${clientName}`;
+            } catch (siteErr: any) {
+                diagnostics.fixResults.frontendSiteWwwRoot = `Error: ${siteErr.message}`;
+            }
+
+            // 2. Fix Backend Permissions & Document Root
+            try {
+                await execAsync(`chmod -R 755 ${backendDestDir}`);
+                await execAsync(`chown -R systego:psacln ${backendDestDir}`);
+                diagnostics.fixResults.backendPermissions = "chmod 755 & chown psacln applied";
+            } catch (bpErr: any) {
+                diagnostics.fixResults.backendPermissions = `Error: ${bpErr.message}`;
+            }
+
+            try {
+                await executePleskCli('site', [
+                    '--update', `api-${clientName}.systego.net`,
+                    '-www-root', `subdomains/api-${clientName}/public`
+                ]);
+                diagnostics.fixResults.backendSiteWwwRoot = `Configured to subdomains/api-${clientName}/public`;
+            } catch (bsErr: any) {
+                diagnostics.fixResults.backendSiteWwwRoot = `Error: ${bsErr.message}`;
+            }
         }
 
         return res.json({ success: true, data: diagnostics });
