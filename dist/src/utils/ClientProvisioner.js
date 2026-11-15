@@ -333,7 +333,7 @@ SUPER_SYSTEGO_URL=${process.env.SUPER_SYSTEGO_URL || 'https://superback.systego.
 SUPER_SYSTEGO_API_KEY=${superSystegoApiKey || 'NOT_SET'}
 
 # MongoDB Configuration
-MongoDB_URI=mongodb://${dbConfig.dbUser}:${dbConfig.dbPass}@127.0.0.1:27017/${dbConfig.dbName}?authSource=admin
+MongoDB_URI=mongodb://${dbConfig.dbUser}:${dbConfig.dbPass}@127.0.0.1:32768/${dbConfig.dbName}?authSource=admin
 
 # QZ Tray Certificates 
 QZ_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
