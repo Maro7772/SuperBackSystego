@@ -10,12 +10,25 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import { connectDB } from "./models/connection";
 import { seedAdminFromEnv } from "./utils/seedAdmin";
+import { startSubscriptionCheckJob } from "./jobs/subscriptionCheck.job";
+import { backfillClientWarehouseEnabled } from "./utils/backfillClientWarehouseEnabled";
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
-connectDB().then(seedAdminFromEnv).catch(() => { });
+connectDB()
+  .then(() => {
+    seedAdminFromEnv().catch(() => {});
+
+    // Fix legacy client databases automatically. This runs in the
+    // background so a slow/unreachable client DB never blocks startup.
+    backfillClientWarehouseEnabled().catch((error) => {
+      console.error("[warehouse-backfill] Failed:", error);
+    });
+  })
+  .catch(() => {});
+startSubscriptionCheckJob();
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: "*" }));

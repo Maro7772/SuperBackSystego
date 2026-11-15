@@ -1,0 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ExtraRouter = void 0;
+const express_1 = require("express");
+const ExtraController_1 = require("../../controller/admin/ExtraController");
+const authenticated_1 = require("../../middlewares/authenticated");
+const catchAsync_1 = require("../../utils/catchAsync");
+exports.ExtraRouter = (0, express_1.Router)();
+exports.ExtraRouter.use(authenticated_1.authenticated);
+exports.ExtraRouter.get("/", (0, catchAsync_1.catchAsync)(ExtraController_1.view));
+exports.ExtraRouter.get("/:id", (0, catchAsync_1.catchAsync)(ExtraController_1.getById));
+exports.ExtraRouter.post("/add", (0, catchAsync_1.catchAsync)(ExtraController_1.create));
+exports.ExtraRouter.put("/update/:id", (0, catchAsync_1.catchAsync)(ExtraController_1.modify));
+exports.ExtraRouter.delete("/delete_item/:id", (0, catchAsync_1.catchAsync)(ExtraController_1.delete_item));
+exports.default = exports.ExtraRouter;

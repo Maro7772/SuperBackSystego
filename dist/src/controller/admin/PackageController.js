@@ -5,14 +5,14 @@ const Package_1 = require("../../models/schema/auth/Package");
 const Errors_1 = require("../../Errors");
 const response_1 = require("../../utils/response");
 const view = async (req, res) => {
-    const packages = await Package_1.PackageModel.find();
+    const packages = await Package_1.PackageModel.find().populate("extras");
     return (0, response_1.SuccessResponse)(res, { data: packages }, 200);
 };
 exports.view = view;
 // get by id 
 const getById = async (req, res) => {
     const id = req.params.id;
-    const package_item = await Package_1.PackageModel.findById(id);
+    const package_item = await Package_1.PackageModel.findById(id).populate("extras");
     if (!package_item) {
         throw new Errors_1.NotFound('Package not found');
     }
@@ -20,7 +20,7 @@ const getById = async (req, res) => {
 };
 exports.getById = getById;
 const create = async (req, res) => {
-    const { name, description, monthly_price, quarterly_price, half_yearly_price, yearly_price, status, haveEcommerce, haveMobileApp, havePOS, haveReports, haveStockTake } = req.body;
+    const { name, description, monthly_price, quarterly_price, half_yearly_price, yearly_price, status, haveEcommerce, haveMobileApp, havePOS, haveReports, haveStockTake, branches, online_branches, extras } = req.body;
     const new_package = await Package_1.PackageModel.create({
         name,
         description,
@@ -33,7 +33,16 @@ const create = async (req, res) => {
         haveMobileApp,
         havePOS,
         haveReports,
-        haveStockTake
+        haveStockTake,
+        branches: branches !== undefined && branches !== null && branches !== ""
+            ? Number(branches) || 0
+            : 0,
+        online_branches: online_branches !== undefined &&
+            online_branches !== null &&
+            online_branches !== ""
+            ? Number(online_branches) || 0
+            : 0,
+        extras: Array.isArray(extras) ? extras : [],
     });
     return (0, response_1.SuccessResponse)(res, { message: 'Package created successfully' }, 201);
 };
@@ -44,7 +53,7 @@ const modify = async (req, res) => {
     if (!package_item) {
         throw new Errors_1.NotFound('Package not found');
     }
-    const { name, description, monthly_price, quarterly_price, half_yearly_price, yearly_price, status, haveEcommerce, haveMobileApp, havePOS, haveReports, haveStockTake } = req.body;
+    const { name, description, monthly_price, quarterly_price, half_yearly_price, yearly_price, status, haveEcommerce, haveMobileApp, havePOS, haveReports, haveStockTake, branches, online_branches, extras } = req.body;
     package_item.name = name ?? package_item.name;
     package_item.description = description ?? package_item.description;
     package_item.monthly_price = monthly_price ?? package_item.monthly_price;
@@ -57,6 +66,17 @@ const modify = async (req, res) => {
     package_item.havePOS = havePOS ?? package_item.havePOS;
     package_item.haveReports = haveReports ?? package_item.haveReports;
     package_item.haveStockTake = haveStockTake ?? package_item.haveStockTake;
+    if (branches !== undefined && branches !== null && branches !== "") {
+        package_item.branches = Number(branches) || 0;
+    }
+    if (online_branches !== undefined &&
+        online_branches !== null &&
+        online_branches !== "") {
+        package_item.online_branches = Number(online_branches) || 0;
+    }
+    if (Array.isArray(extras)) {
+        package_item.extras = extras;
+    }
     await package_item.save();
     return (0, response_1.SuccessResponse)(res, { message: 'package updated successfully' }, 200);
 };

@@ -18,5 +18,9 @@ const PackageSchema = new mongoose_1.default.Schema({
     havePOS: { type: Boolean, default: false },
     haveReports: { type: Boolean, default: false },
     haveStockTake: { type: Boolean, default: false },
+    branches: { type: Number, default: 0 },
+    online_branches: { type: Number, default: 0 },
+    // Optional add-ons chosen for this package.
+    extras: [{ type: mongoose_1.default.Schema.Types.ObjectId, ref: "Extra" }],
 }, { timestamps: true, });
 exports.PackageModel = mongoose_1.default.model('Package', PackageSchema);

@@ -17,9 +17,10 @@ const PaymentSchema = new mongoose.Schema(
     amount: { type: Number, required: true },
     date: { type: Date, },
     status: { type: String, enum: ['pending', 'approve', 'reject'] },
+    payment_cycle: { type: String, enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'] },
+    screenshot: { type: String },
   },
   { timestamps: true, }
 );
 
 export const PaymentModel = mongoose.model('Payment', PaymentSchema);
-

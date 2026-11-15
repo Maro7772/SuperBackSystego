@@ -35,7 +35,8 @@ const MASTER_BACKEND_DIR = process.env.MASTER_BACKEND_DIR || '/var/www/vhosts/sy
 export async function provisionNewClient(
     clientName: string,
     dbConfig: { dbName: string; dbUser: string; dbPass: string },
-    logoBase64?: string
+    logoBase64?: string,
+    superSystegoApiKey?: string
 ) {
     console.log(`[Provisioning] Starting for client: ${clientName}`);
 
@@ -100,7 +101,7 @@ export async function provisionNewClient(
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
 
         // 6. Generate client-specific .env file for the Node.js backend
-        await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig);
+        await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
 
         // 7. Trigger a restart for the Node.js backend
         // Plesk Passenger restarts the app when a tmp/restart.txt file is touched
@@ -187,6 +188,7 @@ export async function generateBackendEnv(
     superSystegoApiKey?: string
 ) {
     const envPath = path.join(destDir, '.env');
+    const tmpPath = path.join(destDir, '.env.tmp');
 
     // Customize this based on your backend's required environment variables
     const envContent = `
@@ -267,7 +269,8 @@ SHIFT_REPORT_PASSWORD=123456789
 `.trim();
 
     // Normalize Windows \r\n to Unix \n before writing — dotenv on Linux needs this for multiline values
-    await fs.writeFile(envPath, envContent.replace(/\r\n/g, '\n'), 'utf-8');
+    await fs.writeFile(tmpPath, envContent.replace(/\r\n/g, '\n'), 'utf-8');
+    await fs.rename(tmpPath, envPath);
     console.log(`[Provisioning] Wrote backend .env file to ${envPath}`);
 }
 
@@ -304,14 +307,7 @@ async function generateFrontendHtaccess(destDir: string) {
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^ecommerce/(.*)$ /ecommerce/index.html [L]
 
-    # 5. Handle main project (Next.js style .html extension fallback)
-    RewriteCond %{REQUEST_URI} !^/(point-of-sale|admin-login|ecommerce)
-    RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteCond %{REQUEST_FILENAME} !-d
-    RewriteCond %{REQUEST_FILENAME}.html -f
-    RewriteRule ^(.*)$ $1.html [L]
-
-    # 6. Fallback to root index.html for main project
+    # 5. Fallback to root index.html for main project (SPA)
     RewriteCond %{REQUEST_URI} !^/(point-of-sale|admin-login|ecommerce)
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d

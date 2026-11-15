@@ -1,0 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const PaymentApprovalController_1 = require("../../controller/admin/PaymentApprovalController");
+const authenticated_1 = require("../../middlewares/authenticated");
+const authorizeRole_1 = require("../../middlewares/authorizeRole");
+const router = (0, express_1.Router)();
+router.use(authenticated_1.authenticated);
+router.use((0, authorizeRole_1.authorizeRole)("super_admin"));
+router.get("/", PaymentApprovalController_1.listAllPayments);
+router.get("/pending", PaymentApprovalController_1.listPendingPayments);
+router.post("/:id/approve", PaymentApprovalController_1.approvePayment);
+router.post("/:id/reject", PaymentApprovalController_1.rejectPayment);
+exports.default = router;

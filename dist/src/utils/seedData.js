@@ -6,12 +6,62 @@ const Package_1 = require("../models/schema/auth/Package");
 const PaymentMethod_1 = require("../models/schema/auth/PaymentMethod");
 const Coupon_1 = require("../models/schema/auth/Coupon");
 const Client_1 = require("../models/schema/auth/Client");
+const Admin_1 = require("../models/schema/auth/Admin");
 const seedData = async () => {
     console.log("Starting database seeding...");
     try {
+        // ============================================
+        // 0. Admin (Super Admin) ✅
+        // ============================================
+        const adminEmail = process.env.ADMIN_EMAIL;
+        const adminPassword = process.env.ADMIN_PASSWORD;
+        const adminName = process.env.ADMIN_NAME || "Super Admin";
+        if (adminEmail && adminPassword) {
+            const existingAdmin = await Admin_1.AdminModel.findOne({ email: adminEmail });
+            if (existingAdmin) {
+                let needsUpdate = false;
+                // ✅ تأكد إنه super_admin
+                if (existingAdmin.role !== "super_admin") {
+                    existingAdmin.role = "super_admin";
+                    needsUpdate = true;
+                }
+                // ✅ لو الباسورد مش hashed، اعمله hash
+                // (bcrypt hashes start with $2a$, $2b$, or $2y$)
+                if (!existingAdmin.password.startsWith("$2")) {
+                    existingAdmin.password = adminPassword; // pre-save hook will hash
+                    needsUpdate = true;
+                }
+                if (needsUpdate) {
+                    await existingAdmin.save();
+                    console.log(`Updated admin "${adminEmail}" (role/password).`);
+                }
+                else {
+                    console.log(`Admin "${adminEmail}" already up-to-date.`);
+                }
+            }
+            else {
+                // ✅ إنشاء admin جديد
+                await Admin_1.AdminModel.create({
+                    name: adminName,
+                    email: adminEmail,
+                    password: adminPassword, // pre-save hook will hash
+                    role: "super_admin",
+                });
+                console.log(`Seeded admin user: ${adminEmail}`);
+            }
+        }
+        else {
+            console.log("Skipping admin seed (ADMIN_EMAIL/ADMIN_PASSWORD not set).");
+        }
+        // ============================================
         // 1. Themes
+        // ============================================
         const themes = [
-            { name: "Light Mode", description: "Standard light theme", theme: "light" },
+            {
+                name: "Light Mode",
+                description: "Standard light theme",
+                theme: "light",
+            },
             { name: "Dark Mode", description: "Standard dark theme", theme: "dark" },
             { name: "Blue Horizon", description: "Blue-tinted theme", theme: "blue" },
         ];
@@ -19,7 +69,9 @@ const seedData = async () => {
             await Theme_1.ThemeModel.updateOne({ theme: theme.theme }, { $set: theme }, { upsert: true });
         }
         console.log("Themes seeded.");
+        // ============================================
         // 2. Packages
+        // ============================================
         const packages = [
             {
                 name: "Basic Plan",
@@ -44,7 +96,9 @@ const seedData = async () => {
             await Package_1.PackageModel.updateOne({ name: pkg.name }, { $set: pkg }, { upsert: true });
         }
         console.log("Packages seeded.");
+        // ============================================
         // 3. Payment Methods
+        // ============================================
         const paymentMethods = [
             {
                 name: "Credit Card",
@@ -63,7 +117,9 @@ const seedData = async () => {
             await PaymentMethod_1.PaymentMethodModel.updateOne({ name: method.name }, { $set: method }, { upsert: true });
         }
         console.log("Payment Methods seeded.");
+        // ============================================
         // 4. Coupons
+        // ============================================
         const coupons = [
             {
                 code: "WELCOME10",
@@ -83,24 +139,25 @@ const seedData = async () => {
             },
         ];
         for (const coupon of coupons) {
-            // Check if coupon exists to avoid unique constraint error on 'code'
             const existing = await Coupon_1.CouponModel.findOne({ code: coupon.code });
             if (!existing) {
                 await Coupon_1.CouponModel.create(coupon);
             }
         }
         console.log("Coupons seeded.");
+        // ============================================
         // 5. Clients (Sample)
+        // ============================================
         const basicPackage = await Package_1.PackageModel.findOne({ name: "Basic Plan" });
         if (basicPackage) {
             const clients = [
                 {
                     company_name: "Acme Corp",
                     email: "contact@acme.com",
-                    password: "password123", // Will be hashed by pre-save hook if creating new
+                    password: "password123",
                     status: "active",
                     package_id: basicPackage._id,
-                }
+                },
             ];
             for (const client of clients) {
                 const existing = await Client_1.ClientModel.findOne({ email: client.email });

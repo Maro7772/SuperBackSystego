@@ -6,11 +6,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const dotenv_1 = __importDefault(require("dotenv"));
 const connection_1 = require("./models/connection");
 const seedData_1 = require("./utils/seedData");
+const seedAdmin_1 = require("./utils/seedAdmin");
 dotenv_1.default.config();
 const runSeed = async () => {
     try {
         await (0, connection_1.connectDB)();
         await (0, seedData_1.seedData)();
+        await (0, seedAdmin_1.seedAdminFromEnv)();
         console.log("Seeding complete. Exiting...");
         process.exit(0);
     }

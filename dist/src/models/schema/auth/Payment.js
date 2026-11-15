@@ -21,5 +21,7 @@ const PaymentSchema = new mongoose_1.default.Schema({
     amount: { type: Number, required: true },
     date: { type: Date, },
     status: { type: String, enum: ['pending', 'approve', 'reject'] },
+    payment_cycle: { type: String, enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'] },
+    screenshot: { type: String },
 }, { timestamps: true, });
 exports.PaymentModel = mongoose_1.default.model('Payment', PaymentSchema);

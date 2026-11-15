@@ -39,7 +39,7 @@ const MASTER_BACKEND_DIR = process.env.MASTER_BACKEND_DIR || '/var/www/vhosts/sy
  * @param clientName The sanitized name of the client (e.g. "myschool")
  * @param dbConfig The database credentials generated for this client
  */
-async function provisionNewClient(clientName, dbConfig, logoBase64) {
+async function provisionNewClient(clientName, dbConfig, logoBase64, superSystegoApiKey) {
     console.log(`[Provisioning] Starting for client: ${clientName}`);
     // 1. Create the dual subdomains in Plesk via our XML API
     const frontendSubdomainUrl = await (0, PleskService_1.createSubdomain)(clientName);
@@ -92,7 +92,7 @@ async function provisionNewClient(clientName, dbConfig, logoBase64) {
         console.log(`[Provisioning] Copying backend files to ${backendDestDir}`);
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
         // 6. Generate client-specific .env file for the Node.js backend
-        await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig);
+        await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
         // 7. Trigger a restart for the Node.js backend
         // Plesk Passenger restarts the app when a tmp/restart.txt file is touched
         await triggerNodeRestart(backendDestDir);
@@ -167,6 +167,7 @@ async function copyDirectory(src, dest) {
  */
 async function generateBackendEnv(destDir, clientName, frontendUrl, dbConfig, superSystegoApiKey) {
     const envPath = path_1.default.join(destDir, '.env');
+    const tmpPath = path_1.default.join(destDir, '.env.tmp');
     // Customize this based on your backend's required environment variables
     const envContent = `
 # Environment Variables for ${clientName}
@@ -245,7 +246,8 @@ SSZp2s5zvmcvIGI1rNzab3zbJjwXHx+P00KPIVhcTA==
 SHIFT_REPORT_PASSWORD=123456789
 `.trim();
     // Normalize Windows \r\n to Unix \n before writing — dotenv on Linux needs this for multiline values
-    await promises_1.default.writeFile(envPath, envContent.replace(/\r\n/g, '\n'), 'utf-8');
+    await promises_1.default.writeFile(tmpPath, envContent.replace(/\r\n/g, '\n'), 'utf-8');
+    await promises_1.default.rename(tmpPath, envPath);
     console.log(`[Provisioning] Wrote backend .env file to ${envPath}`);
 }
 /**
@@ -281,14 +283,7 @@ async function generateFrontendHtaccess(destDir) {
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^ecommerce/(.*)$ /ecommerce/index.html [L]
 
-    # 5. Handle main project (Next.js style .html extension fallback)
-    RewriteCond %{REQUEST_URI} !^/(point-of-sale|admin-login|ecommerce)
-    RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteCond %{REQUEST_FILENAME} !-d
-    RewriteCond %{REQUEST_FILENAME}.html -f
-    RewriteRule ^(.*)$ $1.html [L]
-
-    # 6. Fallback to root index.html for main project
+    # 5. Fallback to root index.html for main project (SPA)
     RewriteCond %{REQUEST_URI} !^/(point-of-sale|admin-login|ecommerce)
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d

@@ -1,0 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const OperationReportsController_1 = require("../../controller/admin/OperationReportsController");
+const authenticated_1 = require("../../middlewares/authenticated");
+const router = (0, express_1.Router)();
+router.use(authenticated_1.authenticated);
+router.get("/", OperationReportsController_1.getOperationReports);
+router.get("/:id", OperationReportsController_1.getOperationReportById);
+router.patch("/:id/status", OperationReportsController_1.updateOperationReportStatus);
+router.patch("/:id", OperationReportsController_1.updateOperationReportStatus);
+router.post("/:id/notes", OperationReportsController_1.addNote);
+router.delete("/:id/notes/:noteIndex", OperationReportsController_1.deleteNote);
+exports.default = router;
