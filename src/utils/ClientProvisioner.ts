@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { createSubdomain, deleteSubdomain, executePleskCli } from './PleskService';
+import { createSubdomain, deleteSubdomain, executePleskCli, enableNodeJsOnDomain } from './PleskService';
 import { ClientModel } from '../models/schema/auth/Client';
 import { exec } from 'child_process';
 import util from 'util';
@@ -109,16 +109,34 @@ export async function provisionNewClient(
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
 
-        // 7. Copy node_modules from master backend using native linux cp
-        console.log(`[Provisioning] Copying node_modules for backend...`);
+        // 7. Copy node_modules cache from master backend if available
+        console.log(`[Provisioning] Copying node_modules cache for backend...`);
         try {
             const masterNodeModules = path.join(MASTER_BACKEND_DIR, 'node_modules');
             await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
         } catch (nmErr: any) {
-            console.warn(`[Provisioning] Could not copy node_modules: ${nmErr.message}`);
+            console.warn(`[Provisioning] Could not copy node_modules cache: ${nmErr.message}`);
         }
 
-        // 8. Configure Document Root & App Root for Plesk Passenger
+        // 8. Run npm install (npm i)
+        console.log(`[Provisioning] Running npm install in ${backendDestDir}...`);
+        try {
+            await execAsync('npm install', { cwd: backendDestDir });
+            console.log(`[Provisioning] ✅ npm install completed successfully`);
+        } catch (npmErr: any) {
+            console.warn(`[Provisioning] npm install warning: ${npmErr.message}`);
+        }
+
+        // 9. Run npm run build
+        console.log(`[Provisioning] Running npm run build in ${backendDestDir}...`);
+        try {
+            await execAsync('npm run build', { cwd: backendDestDir });
+            console.log(`[Provisioning] ✅ npm run build completed successfully`);
+        } catch (buildErr: any) {
+            console.warn(`[Provisioning] npm run build warning: ${buildErr.message}`);
+        }
+
+        // 10. Configure Document Root & App Root for Plesk Passenger
         try {
             const publicDir = path.join(backendDestDir, 'public');
             await fs.mkdir(publicDir, { recursive: true }).catch(() => {});
@@ -130,7 +148,7 @@ export async function provisionNewClient(
             console.warn(`[Provisioning] Could not update Document Root in Plesk: ${docErr.message}`);
         }
 
-        // 9. Generate app.js shim for Plesk default startup
+        // 11. Generate app.js shim for Plesk default startup
         const appJsPath = path.join(backendDestDir, 'app.js');
         const appJsContent = `const fs = require('fs');
 const path = require('path');
@@ -160,32 +178,58 @@ try {
 `;
         await fs.writeFile(appJsPath, appJsContent, 'utf-8');
 
-        // 10. Disable Nginx proxy mode (best practice for Node apps on Plesk)
+        // 12. Disable Nginx proxy mode (best practice for Node apps on Plesk)
         try {
             await executePleskCli('domain', ['--update-web-server-settings', backendSubdomainUrl, '-nginx-proxy-mode', 'false']);
         } catch (nginxErr: any) {
             console.warn(`[Provisioning] Could not update nginx proxy mode: ${nginxErr.message}`);
         }
 
-        // 11. Fix file ownership for Plesk Passenger
+        // 13. Enable Node.js in Plesk (both via XML API and Plesk CLI with fallback)
+        console.log(`[Provisioning] Enabling Node.js extension in Plesk for ${backendSubdomainUrl}...`);
+        try {
+            await enableNodeJsOnDomain(`api-${clientName}`);
+            console.log(`[Provisioning] ✅ Node.js enabled via Plesk XML API`);
+        } catch (xmlNodeErr: any) {
+            console.warn(`[Provisioning] XML enableNodeJs failed: ${xmlNodeErr.message}. Trying Plesk CLI...`);
+            try {
+                await executePleskCli('extension', [
+                    '--exec', 'nodejs',
+                    '--enable',
+                    '-domain', backendSubdomainUrl
+                ]);
+                console.log(`[Provisioning] ✅ Node.js enabled via Plesk CLI`);
+            } catch (cliNodeErr: any) {
+                console.warn(`[Provisioning] Plesk CLI enableNodeJs warning: ${cliNodeErr.message}`);
+            }
+        }
+
+        // 14. Configure startup file and app-mode in Plesk
+        try {
+            await executePleskCli('extension', [
+                '--exec', 'nodejs',
+                '--update',
+                '-domain', backendSubdomainUrl,
+                '-startup-file', 'dist/src/server.js',
+                '-app-mode', 'production'
+            ]);
+            console.log(`[Provisioning] ✅ Configured startup file dist/src/server.js in Plesk`);
+        } catch (updateErr: any) {
+            console.warn(`[Provisioning] Could not update nodejs startup-file in Plesk: ${updateErr.message}`);
+        }
+
+        // 15. Fix file ownership for Plesk Passenger
         try {
             await execAsync(`chown -R systego:psacln ${backendDestDir}`);
         } catch (chownErr: any) {
             console.warn(`[Provisioning] Could not fix backend file ownership: ${chownErr.message}`);
         }
 
-        // 12. Enable Node.js extension in Plesk
-        try {
-            await executePleskCli('extension', ['--call', 'nodejs', '--enable', '-domain', backendSubdomainUrl]);
-        } catch (nodeExtErr: any) {
-            console.warn(`[Provisioning] Could not enable nodejs extension: ${nodeExtErr.message}`);
-        }
-
-        // 13. Trigger a restart for the Node.js backend
+        // 16. Trigger a restart for the Node.js backend
         // Plesk Passenger restarts the app when a tmp/restart.txt file is touched
         await triggerNodeRestart(backendDestDir);
 
-        // 14. Install Let's Encrypt SSL certificates for Frontend & Backend subdomains
+        // 17. Install Let's Encrypt SSL certificates for Frontend & Backend subdomains
         console.log(`[Provisioning] Waiting 5 seconds before installing SSL certificates...`);
         const { setTimeout } = require('timers/promises');
         await setTimeout(5000);

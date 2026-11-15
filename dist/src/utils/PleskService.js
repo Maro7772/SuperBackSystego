@@ -66,8 +66,8 @@ function parsePleskResponse(responseXml, operation) {
     if (statusMatch && statusMatch[1] === 'error') {
         const errCode = errorCodeMatch ? errorCodeMatch[1] : 'unknown';
         const errText = errorTextMatch ? errorTextMatch[1] : 'Unknown Plesk error';
-        if (/already exists/i.test(errText)) {
-            console.warn(`[Plesk Warning] ${operation}: Subdomain already exists in Plesk, proceeding safely: ${errText}`);
+        if (/already exists/i.test(errText) || /already enabled/i.test(errText)) {
+            console.warn(`[Plesk Warning] ${operation}: Subdomain or feature already exists/enabled in Plesk, proceeding safely: ${errText}`);
             return;
         }
         throw new Error(`Plesk ${operation} failed [${errCode}]: ${errText}`);
