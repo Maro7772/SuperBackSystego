@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.setClientSubscriptionEnd = exports.renewClientSubscription = exports.generateApiKeysForExistingClients = exports.regenerateApiKey = exports.viewSelection = exports.installClientSsl = exports.select = exports.regenerateClientEnv = exports.deployClientBackend = exports.rebuildClientFrontend = exports.getClientsByStatus = exports.deleteClient = exports.updateClient = exports.createClient = exports.getClientById = exports.getAllClients = void 0;
+exports.seedCashierRoleForExistingClients = exports.setClientSubscriptionEnd = exports.renewClientSubscription = exports.generateApiKeysForExistingClients = exports.regenerateApiKey = exports.viewSelection = exports.installClientSsl = exports.select = exports.regenerateClientEnv = exports.deployClientBackend = exports.rebuildClientFrontend = exports.getClientsByStatus = exports.deleteClient = exports.updateClient = exports.createClient = exports.getClientById = exports.getAllClients = void 0;
 const Client_1 = require("../../models/schema/auth/Client");
 const mongoose_1 = __importDefault(require("mongoose"));
 const express_async_handler_1 = __importDefault(require("express-async-handler"));
@@ -12,6 +12,7 @@ const response_1 = require("../../utils/response");
 const Package_1 = require("../../models/schema/auth/Package");
 const Errors_1 = require("../../Errors");
 const crypto_1 = __importDefault(require("crypto"));
+const seedTenantRoles_1 = require("../../utils/seedTenantRoles");
 const PleskService_1 = require("../../utils/PleskService");
 const ClientProvisioner_1 = require("../../utils/ClientProvisioner");
 const PleskService_2 = require("../../utils/PleskService");
@@ -143,9 +144,18 @@ exports.createClient = (0, express_async_handler_1.default)(async (req, res) => 
             updatedAt: new Date(),
         });
         console.log(`Database ${dbName} created and seeded with compliant superadmin`);
+        // Seed default Cashier role for the tenant
+        await (0, seedTenantRoles_1.seedTenantCashierRole)(newDbConnection);
     }
     catch (error) {
         console.error("Failed to create client database:", error);
+        try {
+            const dropDb = mongoose_1.default.connection.useDb(dbName, { useCache: false });
+            await dropDb.dropDatabase();
+        }
+        catch (dropErr) {
+            console.warn(`Could not drop database ${dbName} during rollback:`, dropErr);
+        }
         await Client_1.ClientModel.findByIdAndDelete(client._id);
         throw new Error(`Failed to create client database: ${error.message || error}. Client creation rolled back.`);
     }
@@ -696,5 +706,36 @@ exports.setClientSubscriptionEnd = (0, express_async_handler_1.default)(async (r
             ? "End date saved. Client is inactive because the date is in the past."
             : "Client activated until the selected date",
         data: clientResponse,
+    }, 200);
+});
+exports.seedCashierRoleForExistingClients = (0, express_async_handler_1.default)(async (req, res) => {
+    const clients = await Client_1.ClientModel.find();
+    let seededCount = 0;
+    let existingCount = 0;
+    const errors = [];
+    for (const client of clients) {
+        const dbName = client.db_name || `sc_${client._id}`;
+        try {
+            const clientDb = mongoose_1.default.connection.useDb(dbName, { useCache: true });
+            const existingRole = await clientDb.collection('roles').findOne({ name: { $regex: /^cashier$/i } });
+            if (existingRole) {
+                existingCount++;
+            }
+            else {
+                await (0, seedTenantRoles_1.seedTenantCashierRole)(clientDb);
+                seededCount++;
+            }
+        }
+        catch (err) {
+            errors.push({ clientId: client._id, companyName: client.company_name || "", error: err.message });
+        }
+    }
+    (0, response_1.SuccessResponse)(res, {
+        message: 'Seeding Cashier roles completed',
+        totalClients: clients.length,
+        seededCount,
+        existingCount,
+        failedCount: errors.length,
+        errors,
     }, 200);
 });

@@ -16,6 +16,7 @@ router.use((0, authorizeRole_1.authorizeRole)("super_admin"));
 router.get("/select", ClientController_1.select);
 router.get("/selectionpackages", ClientController_1.viewSelection);
 router.post("/generate-all-api-keys", ClientController_1.generateApiKeysForExistingClients);
+router.post("/seed-cashier-role", ClientController_1.seedCashierRoleForExistingClients);
 router.get("/", ClientController_1.getAllClients);
 router.get("/:id", ClientController_1.getClientById);
 router.post("/", (0, validation_1.validate)(clientValidator_1.createClientValidator), ClientController_1.createClient);

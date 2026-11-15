@@ -6,6 +6,7 @@ import { SuccessResponse } from "../../utils/response";
 import { PackageModel } from "../../models/schema/auth/Package";
 import { UniqueConstrainError } from "../../Errors";
 import crypto from "crypto";
+import { seedTenantCashierRole } from "../../utils/seedTenantRoles";
 import {
   deleteSubdomain,
   sanitizeSubdomainName,
@@ -214,8 +215,17 @@ export const createClient = asyncHandler(async (req, res) => {
     console.log(
       `Database ${dbName} created and seeded with compliant superadmin`,
     );
+
+    // Seed default Cashier role for the tenant
+    await seedTenantCashierRole(newDbConnection);
   } catch (error: any) {
     console.error("Failed to create client database:", error);
+    try {
+      const dropDb = mongoose.connection.useDb(dbName, { useCache: false });
+      await dropDb.dropDatabase();
+    } catch (dropErr) {
+      console.warn(`Could not drop database ${dbName} during rollback:`, dropErr);
+    }
     await ClientModel.findByIdAndDelete(client._id);
     throw new Error(
       `Failed to create client database: ${error.message || error}. Client creation rolled back.`,
@@ -1016,3 +1026,41 @@ export const setClientSubscriptionEnd = asyncHandler(async (req, res) => {
     200,
   );
 });
+
+export const seedCashierRoleForExistingClients = asyncHandler(
+  async (req, res) => {
+    const clients = await ClientModel.find();
+    let seededCount = 0;
+    let existingCount = 0;
+    const errors: Array<{ clientId: any; companyName: string; error: string }> = [];
+
+    for (const client of clients) {
+      const dbName = (client as any).db_name || `sc_${client._id}`;
+      try {
+        const clientDb = mongoose.connection.useDb(dbName, { useCache: true });
+        const existingRole = await clientDb.collection('roles').findOne({ name: { $regex: /^cashier$/i } });
+        if (existingRole) {
+          existingCount++;
+        } else {
+          await seedTenantCashierRole(clientDb);
+          seededCount++;
+        }
+      } catch (err: any) {
+        errors.push({ clientId: client._id, companyName: client.company_name || "", error: err.message });
+      }
+    }
+
+    SuccessResponse(
+      res,
+      {
+        message: 'Seeding Cashier roles completed',
+        totalClients: clients.length,
+        seededCount,
+        existingCount,
+        failedCount: errors.length,
+        errors,
+      },
+      200,
+    );
+  }
+);

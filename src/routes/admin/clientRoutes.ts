@@ -15,6 +15,7 @@ import {
   generateApiKeysForExistingClients,
   renewClientSubscription,
   setClientSubscriptionEnd,
+  seedCashierRoleForExistingClients,
 } from "../../controller/admin/ClientController";
 import {
   installClientDependencies,
@@ -41,6 +42,7 @@ router.use(authorizeRole("super_admin"));
 router.get("/select", select);
 router.get("/selectionpackages", viewSelection);
 router.post("/generate-all-api-keys", generateApiKeysForExistingClients);
+router.post("/seed-cashier-role", seedCashierRoleForExistingClients);
 router.get("/", getAllClients);
 router.get("/:id", getClientById);
 router.post("/", validate(createClientValidator), createClient);
