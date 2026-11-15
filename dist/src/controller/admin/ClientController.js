@@ -7,6 +7,7 @@ exports.retryProvisionClient = exports.seedCashierRoleForExistingClients = expor
 const Client_1 = require("../../models/schema/auth/Client");
 const mongoose_1 = __importDefault(require("mongoose"));
 const express_async_handler_1 = __importDefault(require("express-async-handler"));
+const path_1 = __importDefault(require("path"));
 const NotFound_1 = require("../../Errors/NotFound");
 const response_1 = require("../../utils/response");
 const Package_1 = require("../../models/schema/auth/Package");
@@ -185,30 +186,39 @@ exports.createClient = (0, express_async_handler_1.default)(async (req, res) => 
     client.subdomain_url = expectedFrontendUrl;
     client.provisioning_status = "in_progress";
     await client.save();
-    // Run heavy provisioning asynchronously in the background so the HTTP request
-    // returns immediately and Nginx / Plesk proxy timeouts or service reloads do NOT drop the connection!
-    setImmediate(async () => {
-        console.log(`[Provisioning] Background provisioning started for client: ${client.company_name} (${sanitizedSubdomain})`);
-        try {
-            const provisionResult = await (0, ClientProvisioner_1.provisionNewClient)(sanitizedSubdomain, {
-                dbName: dbName,
-                dbUser: process.env.MONGO_USER || "admin",
-                dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
-            }, logoBase64, rawApiKey);
-            console.log(`[Provisioning] Background provisioning completed: Frontend=${provisionResult.frontendUrl}, Backend=${provisionResult.backendApiUrl}`);
-            await Client_1.ClientModel.findByIdAndUpdate(client._id, {
-                provisioning_status: "completed",
-                subdomain_url: provisionResult.frontendUrl,
-            });
-        }
-        catch (error) {
-            console.error(`[Provisioning] Background provisioning failed for ${client.company_name}:`, error.message);
-            await Client_1.ClientModel.findByIdAndUpdate(client._id, {
-                provisioning_status: "failed",
-                provisioning_error: error.message || String(error),
-            });
-        }
-    });
+    // Spawn detached provisioning process that survives Passenger web worker reloads!
+    const runnerScript = path_1.default.resolve(__dirname, "../../scripts/provisionClientRunner.js");
+    try {
+        const { spawn } = require("child_process");
+        const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+            detached: true,
+            stdio: "ignore",
+        });
+        child.unref();
+        console.log(`[Provisioning] Detached background runner spawned with PID ${child.pid} for client ${client.company_name} (${client._id})`);
+    }
+    catch (spawnError) {
+        console.error(`[Provisioning] Failed to spawn detached runner, falling back to setImmediate:`, spawnError.message);
+        setImmediate(async () => {
+            try {
+                const provisionResult = await (0, ClientProvisioner_1.provisionNewClient)(sanitizedSubdomain, {
+                    dbName: dbName,
+                    dbUser: process.env.MONGO_USER || "admin",
+                    dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
+                }, logoBase64, rawApiKey);
+                await Client_1.ClientModel.findByIdAndUpdate(client._id, {
+                    provisioning_status: "completed",
+                    subdomain_url: provisionResult.frontendUrl,
+                });
+            }
+            catch (err) {
+                await Client_1.ClientModel.findByIdAndUpdate(client._id, {
+                    provisioning_status: "failed",
+                    provisioning_error: err.message || String(err),
+                });
+            }
+        });
+    }
     const clientResponse = client.toObject();
     delete clientResponse.admin_password;
     delete clientResponse.password;
@@ -774,27 +784,37 @@ exports.retryProvisionClient = (0, express_async_handler_1.default)(async (req, 
             active: true,
         });
     }
-    setImmediate(async () => {
-        try {
-            const provisionResult = await (0, ClientProvisioner_1.provisionNewClient)(sanitizedSubdomain, {
-                dbName,
-                dbUser: process.env.MONGO_USER || "admin",
-                dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
-            }, client.logoBase64, rawApiKey);
-            await Client_1.ClientModel.findByIdAndUpdate(client._id, {
-                provisioning_status: "completed",
-                subdomain_url: provisionResult.frontendUrl,
-            });
-            console.log(`[Provisioning] Manual retry provisioning completed for ${client.company_name}`);
-        }
-        catch (err) {
-            console.error(`[Provisioning] Manual retry provisioning failed for ${client.company_name}:`, err.message);
-            await Client_1.ClientModel.findByIdAndUpdate(client._id, {
-                provisioning_status: "failed",
-                provisioning_error: err.message || String(err),
-            });
-        }
-    });
+    const runnerScript = path_1.default.resolve(__dirname, "../../scripts/provisionClientRunner.js");
+    try {
+        const { spawn } = require("child_process");
+        const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+            detached: true,
+            stdio: "ignore",
+        });
+        child.unref();
+        console.log(`[Provisioning] Detached runner spawned with PID ${child.pid} for retry on client ${client.company_name} (${client._id})`);
+    }
+    catch (spawnError) {
+        setImmediate(async () => {
+            try {
+                const provisionResult = await (0, ClientProvisioner_1.provisionNewClient)(sanitizedSubdomain, {
+                    dbName,
+                    dbUser: process.env.MONGO_USER || "admin",
+                    dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
+                }, client.logoBase64, rawApiKey);
+                await Client_1.ClientModel.findByIdAndUpdate(client._id, {
+                    provisioning_status: "completed",
+                    subdomain_url: provisionResult.frontendUrl,
+                });
+            }
+            catch (err) {
+                await Client_1.ClientModel.findByIdAndUpdate(client._id, {
+                    provisioning_status: "failed",
+                    provisioning_error: err.message || String(err),
+                });
+            }
+        });
+    }
     return (0, response_1.SuccessResponse)(res, {
         message: "Client provisioning restarted in the background",
         data: client,

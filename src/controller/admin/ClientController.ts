@@ -1,6 +1,7 @@
 ﻿import { ClientModel } from "../../models/schema/auth/Client";
 import mongoose from "mongoose";
 import asyncHandler from "express-async-handler";
+import path from "path";
 import { NotFound } from "../../Errors/NotFound";
 import { SuccessResponse } from "../../utils/response";
 import { PackageModel } from "../../models/schema/auth/Package";
@@ -264,43 +265,47 @@ export const createClient = asyncHandler(async (req, res) => {
   client.provisioning_status = "in_progress";
   await client.save();
 
-  // Run heavy provisioning asynchronously in the background so the HTTP request
-  // returns immediately and Nginx / Plesk proxy timeouts or service reloads do NOT drop the connection!
-  setImmediate(async () => {
+  // Spawn detached provisioning process that survives Passenger web worker reloads!
+  const runnerScript = path.resolve(__dirname, "../../scripts/provisionClientRunner.js");
+  try {
+    const { spawn } = require("child_process");
+    const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
     console.log(
-      `[Provisioning] Background provisioning started for client: ${client.company_name} (${sanitizedSubdomain})`,
+      `[Provisioning] Detached background runner spawned with PID ${child.pid} for client ${client.company_name} (${client._id})`,
     );
-    try {
-      const provisionResult = await provisionNewClient(
-        sanitizedSubdomain,
-        {
-          dbName: dbName,
-          dbUser: process.env.MONGO_USER || "admin",
-          dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
-        },
-        logoBase64,
-        rawApiKey,
-      );
-
-      console.log(
-        `[Provisioning] Background provisioning completed: Frontend=${provisionResult.frontendUrl}, Backend=${provisionResult.backendApiUrl}`,
-      );
-
-      await ClientModel.findByIdAndUpdate(client._id, {
-        provisioning_status: "completed",
-        subdomain_url: provisionResult.frontendUrl,
-      });
-    } catch (error: any) {
-      console.error(
-        `[Provisioning] Background provisioning failed for ${client.company_name}:`,
-        error.message,
-      );
-      await ClientModel.findByIdAndUpdate(client._id, {
-        provisioning_status: "failed",
-        provisioning_error: error.message || String(error),
-      });
-    }
-  });
+  } catch (spawnError: any) {
+    console.error(
+      `[Provisioning] Failed to spawn detached runner, falling back to setImmediate:`,
+      spawnError.message,
+    );
+    setImmediate(async () => {
+      try {
+        const provisionResult = await provisionNewClient(
+          sanitizedSubdomain,
+          {
+            dbName: dbName,
+            dbUser: process.env.MONGO_USER || "admin",
+            dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
+          },
+          logoBase64,
+          rawApiKey,
+        );
+        await ClientModel.findByIdAndUpdate(client._id, {
+          provisioning_status: "completed",
+          subdomain_url: provisionResult.frontendUrl,
+        });
+      } catch (err: any) {
+        await ClientModel.findByIdAndUpdate(client._id, {
+          provisioning_status: "failed",
+          provisioning_error: err.message || String(err),
+        });
+      }
+    });
+  }
 
   const clientResponse = client.toObject() as any;
   delete clientResponse.admin_password;
@@ -1115,37 +1120,43 @@ export const retryProvisionClient = asyncHandler(async (req, res) => {
     });
   }
 
-  setImmediate(async () => {
-    try {
-      const provisionResult = await provisionNewClient(
-        sanitizedSubdomain,
-        {
-          dbName,
-          dbUser: process.env.MONGO_USER || "admin",
-          dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
-        },
-        client.logoBase64,
-        rawApiKey,
-      );
+  const runnerScript = path.resolve(__dirname, "../../scripts/provisionClientRunner.js");
+  try {
+    const { spawn } = require("child_process");
+    const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    console.log(
+      `[Provisioning] Detached runner spawned with PID ${child.pid} for retry on client ${client.company_name} (${client._id})`,
+    );
+  } catch (spawnError: any) {
+    setImmediate(async () => {
+      try {
+        const provisionResult = await provisionNewClient(
+          sanitizedSubdomain,
+          {
+            dbName,
+            dbUser: process.env.MONGO_USER || "admin",
+            dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
+          },
+          client.logoBase64,
+          rawApiKey,
+        );
 
-      await ClientModel.findByIdAndUpdate(client._id, {
-        provisioning_status: "completed",
-        subdomain_url: provisionResult.frontendUrl,
-      });
-      console.log(
-        `[Provisioning] Manual retry provisioning completed for ${client.company_name}`,
-      );
-    } catch (err: any) {
-      console.error(
-        `[Provisioning] Manual retry provisioning failed for ${client.company_name}:`,
-        err.message,
-      );
-      await ClientModel.findByIdAndUpdate(client._id, {
-        provisioning_status: "failed",
-        provisioning_error: err.message || String(err),
-      });
-    }
-  });
+        await ClientModel.findByIdAndUpdate(client._id, {
+          provisioning_status: "completed",
+          subdomain_url: provisionResult.frontendUrl,
+        });
+      } catch (err: any) {
+        await ClientModel.findByIdAndUpdate(client._id, {
+          provisioning_status: "failed",
+          provisioning_error: err.message || String(err),
+        });
+      }
+    });
+  }
 
   return SuccessResponse(
     res,

@@ -89,15 +89,93 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
         // This scans recursively, covering both admin and POS bundles
         console.log(`[Provisioning] Injecting dynamic API URLs into React bundles...`);
         await injectApiUrlIntoBundle(frontendDestDir, `https://${backendSubdomainUrl}`);
+        // 4.8. Fix frontend permissions
+        try {
+            await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
+        }
+        catch (permErr) {
+            console.warn(`[Provisioning] Could not fix frontend permissions: ${permErr.message}`);
+        }
         // 5. Copy Backend template (Node.js TypeScript dist folder)
         console.log(`[Provisioning] Copying backend files to ${backendDestDir}`);
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
-        // 7. Trigger a restart for the Node.js backend
+        // 7. Copy node_modules from master backend using native linux cp
+        console.log(`[Provisioning] Copying node_modules for backend...`);
+        try {
+            const masterNodeModules = path_1.default.join(MASTER_BACKEND_DIR, 'node_modules');
+            await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
+        }
+        catch (nmErr) {
+            console.warn(`[Provisioning] Could not copy node_modules: ${nmErr.message}`);
+        }
+        // 8. Configure Document Root & App Root for Plesk Passenger
+        try {
+            const publicDir = path_1.default.join(backendDestDir, 'public');
+            await promises_1.default.mkdir(publicDir, { recursive: true }).catch(() => { });
+            await (0, PleskService_1.executePleskCli)('site', [
+                '--update', backendSubdomainUrl,
+                '-www-root', `subdomains/api-${clientName}/public`
+            ]);
+        }
+        catch (docErr) {
+            console.warn(`[Provisioning] Could not update Document Root in Plesk: ${docErr.message}`);
+        }
+        // 9. Generate app.js shim for Plesk default startup
+        const appJsPath = path_1.default.join(backendDestDir, 'app.js');
+        const appJsContent = `const fs = require('fs');
+const path = require('path');
+const logFile = path.join(__dirname, 'startup-error.log');
+
+process.on('uncaughtException', (err) => {
+    const msg = new Date().toISOString() + ' [UNCAUGHT EXCEPTION] ' + err.stack + '\\n';
+    fs.appendFileSync(logFile, msg);
+    console.error(msg);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+    const msg = new Date().toISOString() + ' [UNHANDLED REJECTION] ' + String(reason) + '\\n';
+    fs.appendFileSync(logFile, msg);
+    console.error(msg);
+});
+
+try {
+    require('./dist/src/server.js');
+} catch (err) {
+    const msg = new Date().toISOString() + ' [STARTUP CRASH] ' + err.stack + '\\n';
+    fs.appendFileSync(logFile, msg);
+    console.error(msg);
+    process.exit(1);
+}
+`;
+        await promises_1.default.writeFile(appJsPath, appJsContent, 'utf-8');
+        // 10. Disable Nginx proxy mode (best practice for Node apps on Plesk)
+        try {
+            await (0, PleskService_1.executePleskCli)('domain', ['--update-web-server-settings', backendSubdomainUrl, '-nginx-proxy-mode', 'false']);
+        }
+        catch (nginxErr) {
+            console.warn(`[Provisioning] Could not update nginx proxy mode: ${nginxErr.message}`);
+        }
+        // 11. Fix file ownership for Plesk Passenger
+        try {
+            await execAsync(`chown -R systego:psacln ${backendDestDir}`);
+        }
+        catch (chownErr) {
+            console.warn(`[Provisioning] Could not fix backend file ownership: ${chownErr.message}`);
+        }
+        // 12. Enable Node.js extension in Plesk
+        try {
+            await (0, PleskService_1.executePleskCli)('extension', ['--call', 'nodejs', '--enable', '-domain', backendSubdomainUrl]);
+        }
+        catch (nodeExtErr) {
+            console.warn(`[Provisioning] Could not enable nodejs extension: ${nodeExtErr.message}`);
+        }
+        // 13. Trigger a restart for the Node.js backend
         // Plesk Passenger restarts the app when a tmp/restart.txt file is touched
         await triggerNodeRestart(backendDestDir);
-        // 8. Install Let's Encrypt SSL certificates for Frontend & Backend subdomains
+        // 14. Install Let's Encrypt SSL certificates for Frontend & Backend subdomains
         console.log(`[Provisioning] Waiting 5 seconds before installing SSL certificates...`);
         const { setTimeout } = require('timers/promises');
         await setTimeout(5000);
@@ -126,19 +204,34 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
  * Non-fatal — logs a warning if it fails so provisioning can continue.
  */
 async function installSslCertificate(subdomainUrl) {
+    const adminEmail = process.env.SSL_ADMIN_EMAIL || 'systego.eg@gmail.com';
     try {
         console.log(`[Provisioning] Installing Let's Encrypt SSL for ${subdomainUrl}...`);
         await (0, PleskService_1.executePleskCli)('extension', [
             '--exec', 'letsencrypt',
             'cli.php',
             '-d', subdomainUrl,
-            '-m', process.env.SSL_ADMIN_EMAIL || 'systego.eg@gmail.com'
+            '-m', adminEmail
         ]);
-        console.log(`[Provisioning] ✅ SSL certificate installed for ${subdomainUrl}`);
+        console.log(`[Provisioning] ✅ SSL certificate installed for ${subdomainUrl} via letsencrypt`);
+        return true;
     }
-    catch (error) {
-        console.warn(`[Provisioning] ⚠️ SSL certificate installation failed for ${subdomainUrl}: ${error.message}`);
-        console.warn(`[Provisioning] The site will still work over HTTP. You can manually install SSL later via Plesk.`);
+    catch (leError) {
+        console.warn(`[Provisioning] letsencrypt CLI returned: ${leError.message}. Trying sslit extension fallback...`);
+        try {
+            await (0, PleskService_1.executePleskCli)('extension', [
+                '--exec', 'sslit',
+                '--certificate', '-issue',
+                '-domain', subdomainUrl,
+                '-registrationEmail', adminEmail
+            ]);
+            console.log(`[Provisioning] ✅ SSL certificate installed for ${subdomainUrl} via sslit`);
+            return true;
+        }
+        catch (sslitError) {
+            console.warn(`[Provisioning] ⚠️ Both SSL installation methods failed for ${subdomainUrl}: ${sslitError.message}`);
+            return false;
+        }
     }
 }
 /**
