@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import axios from 'axios';
 import { createSubdomain, deleteSubdomain, executePleskCli, enableNodeJsOnDomain } from './PleskService';
 import { ClientModel } from '../models/schema/auth/Client';
 import { exec } from 'child_process';
@@ -205,11 +206,22 @@ export async function provisionNewClient(
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
 
-        // 7. Copy node_modules cache from master backend if available
+        // 7. Copy node_modules cache for backend (preferring verified cache with sharp)
         console.log(`[Provisioning] Copying node_modules cache for backend...`);
         try {
+            const janssenNm = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
             const masterNodeModules = path.join(MASTER_BACKEND_DIR, 'node_modules');
-            await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
+            let sourceNm = masterNodeModules;
+            try {
+                await fs.access(path.join(masterNodeModules, 'sharp'));
+            } catch {
+                try {
+                    await fs.access(path.join(janssenNm, 'sharp'));
+                    sourceNm = janssenNm;
+                    console.log(`[Provisioning] Master missing sharp, using verified node_modules from api-janssen`);
+                } catch {}
+            }
+            await execAsync(`cp -a ${sourceNm} ${backendDestDir}/`);
         } catch (nmErr: any) {
             console.warn(`[Provisioning] Could not copy node_modules cache: ${nmErr.message}`);
         }
@@ -1004,6 +1016,57 @@ export const diagnoseClient = async (req: Request, res: Response) => {
             diagnostics.nodejsModuleScripts = e.message;
         }
 
+        // Test XML API queries for Node.js settings
+        try {
+            const { host, port, apiKey } = (require('./PleskService') as any).getPleskConfig();
+            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+            const xmlQuery = `<?xml version="1.0" encoding="UTF-8"?>
+<packet>
+  <extension>
+    <call>
+      <nodejs>
+        <get>
+          <domain>janssen.systego.net</domain>
+        </get>
+      </nodejs>
+    </call>
+  </extension>
+</packet>`;
+            const xmlRes = await axios.post(`https://${host}:${port}/enterprise/control/agent.php`, xmlQuery, {
+                headers: { 'Content-Type': 'text/xml', 'KEY': apiKey },
+                httpsAgent,
+            } as any);
+            diagnostics.janssenNodeJsXml = xmlRes.data;
+        } catch (xmlErr: any) {
+            diagnostics.janssenNodeJsXmlError = xmlErr.message;
+        }
+
+        try {
+            const { host, port, apiKey } = (require('./PleskService') as any).getPleskConfig();
+            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+            const xmlAuto = `<?xml version="1.0" encoding="UTF-8"?>
+<packet>
+  <extension>
+    <call>
+      <nodejs>
+        <set>
+          <domain>${clientName}.systego.net</domain>
+          <app_root>/subdomains/${clientName}</app_root>
+          <startup_file>server.js</startup_file>
+        </set>
+      </nodejs>
+    </call>
+  </extension>
+</packet>`;
+            const autoRes = await axios.post(`https://${host}:${port}/enterprise/control/agent.php`, xmlAuto, {
+                headers: { 'Content-Type': 'text/xml', 'KEY': apiKey },
+                httpsAgent,
+            } as any);
+            diagnostics.xmlSetResult = autoRes.data;
+        } catch (e: any) {
+            diagnostics.xmlSetError = e.message;
+        }
+
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
             diagnostics.fixResults = {};
@@ -1050,11 +1113,15 @@ export const diagnoseClient = async (req: Request, res: Response) => {
                 diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
             }
 
-            // 3. Fix Backend Modules (Restore sharp by copying master node_modules)
+            // 3. Fix Backend Modules (Restore sharp by copying verified node_modules from api-janssen)
             try {
+                const janssenNodeModules = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
                 const masterNodeModules = '/var/www/vhosts/systego.net/master-builds/backend-latest/node_modules';
-                await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
-                diagnostics.fixResults.backendNodeModules = "Copied clean node_modules from master cache";
+                // Update master cache so future provisions are fixed
+                await execAsync(`cp -a ${janssenNodeModules}/sharp ${masterNodeModules}/`).catch(() => {});
+                // Copy to this client backend
+                await execAsync(`cp -a ${janssenNodeModules} ${backendDestDir}/`);
+                diagnostics.fixResults.backendNodeModules = "Copied verified node_modules with sharp from api-janssen";
             } catch (bnmErr: any) {
                 diagnostics.fixResults.backendNodeModules = `Error: ${bnmErr.message}`;
             }

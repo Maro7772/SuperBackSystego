@@ -15,6 +15,7 @@ exports.getClientLogoBase64 = getClientLogoBase64;
 exports.updateClientLogo = updateClientLogo;
 const promises_1 = __importDefault(require("fs/promises"));
 const path_1 = __importDefault(require("path"));
+const axios_1 = __importDefault(require("axios"));
 const PleskService_1 = require("./PleskService");
 const Client_1 = require("../models/schema/auth/Client");
 const child_process_1 = require("child_process");
@@ -197,11 +198,24 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
-        // 7. Copy node_modules cache from master backend if available
+        // 7. Copy node_modules cache for backend (preferring verified cache with sharp)
         console.log(`[Provisioning] Copying node_modules cache for backend...`);
         try {
+            const janssenNm = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
             const masterNodeModules = path_1.default.join(MASTER_BACKEND_DIR, 'node_modules');
-            await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
+            let sourceNm = masterNodeModules;
+            try {
+                await promises_1.default.access(path_1.default.join(masterNodeModules, 'sharp'));
+            }
+            catch {
+                try {
+                    await promises_1.default.access(path_1.default.join(janssenNm, 'sharp'));
+                    sourceNm = janssenNm;
+                    console.log(`[Provisioning] Master missing sharp, using verified node_modules from api-janssen`);
+                }
+                catch { }
+            }
+            await execAsync(`cp -a ${sourceNm} ${backendDestDir}/`);
         }
         catch (nmErr) {
             console.warn(`[Provisioning] Could not copy node_modules cache: ${nmErr.message}`);
@@ -905,7 +919,7 @@ const diagnoseClient = async (req, res) => {
         try {
             const { host, port, apiKey } = require('./PleskService').getPleskConfig ? require('./PleskService').getPleskConfig() : { host: process.env.PLESK_HOST, port: process.env.PLESK_PORT, apiKey: process.env.PLESK_API_KEY };
             const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
-            const res = await axios.get(`https://${host}:${port}/api/v2/cli/commands/`, {
+            const res = await axios_1.default.get(`https://${host}:${port}/api/v2/cli/commands/`, {
                 headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
                 httpsAgent,
             });
@@ -936,6 +950,57 @@ const diagnoseClient = async (req, res) => {
         }
         catch (e) {
             diagnostics.nodejsModuleScripts = e.message;
+        }
+        // Test XML API queries for Node.js settings
+        try {
+            const { host, port, apiKey } = require('./PleskService').getPleskConfig();
+            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+            const xmlQuery = `<?xml version="1.0" encoding="UTF-8"?>
+<packet>
+  <extension>
+    <call>
+      <nodejs>
+        <get>
+          <domain>janssen.systego.net</domain>
+        </get>
+      </nodejs>
+    </call>
+  </extension>
+</packet>`;
+            const xmlRes = await axios_1.default.post(`https://${host}:${port}/enterprise/control/agent.php`, xmlQuery, {
+                headers: { 'Content-Type': 'text/xml', 'KEY': apiKey },
+                httpsAgent,
+            });
+            diagnostics.janssenNodeJsXml = xmlRes.data;
+        }
+        catch (xmlErr) {
+            diagnostics.janssenNodeJsXmlError = xmlErr.message;
+        }
+        try {
+            const { host, port, apiKey } = require('./PleskService').getPleskConfig();
+            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+            const xmlAuto = `<?xml version="1.0" encoding="UTF-8"?>
+<packet>
+  <extension>
+    <call>
+      <nodejs>
+        <set>
+          <domain>${clientName}.systego.net</domain>
+          <app_root>/subdomains/${clientName}</app_root>
+          <startup_file>server.js</startup_file>
+        </set>
+      </nodejs>
+    </call>
+  </extension>
+</packet>`;
+            const autoRes = await axios_1.default.post(`https://${host}:${port}/enterprise/control/agent.php`, xmlAuto, {
+                headers: { 'Content-Type': 'text/xml', 'KEY': apiKey },
+                httpsAgent,
+            });
+            diagnostics.xmlSetResult = autoRes.data;
+        }
+        catch (e) {
+            diagnostics.xmlSetError = e.message;
         }
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
@@ -983,11 +1048,15 @@ const diagnoseClient = async (req, res) => {
             catch (fnErr) {
                 diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
             }
-            // 3. Fix Backend Modules (Restore sharp by copying master node_modules)
+            // 3. Fix Backend Modules (Restore sharp by copying verified node_modules from api-janssen)
             try {
+                const janssenNodeModules = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
                 const masterNodeModules = '/var/www/vhosts/systego.net/master-builds/backend-latest/node_modules';
-                await execAsync(`cp -a ${masterNodeModules} ${backendDestDir}/`);
-                diagnostics.fixResults.backendNodeModules = "Copied clean node_modules from master cache";
+                // Update master cache so future provisions are fixed
+                await execAsync(`cp -a ${janssenNodeModules}/sharp ${masterNodeModules}/`).catch(() => { });
+                // Copy to this client backend
+                await execAsync(`cp -a ${janssenNodeModules} ${backendDestDir}/`);
+                diagnostics.fixResults.backendNodeModules = "Copied verified node_modules with sharp from api-janssen";
             }
             catch (bnmErr) {
                 diagnostics.fixResults.backendNodeModules = `Error: ${bnmErr.message}`;
