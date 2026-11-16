@@ -228,40 +228,32 @@ export async function provisionNewClient(
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
 
-        // 7. Copy node_modules cache for backend (preferring verified cache with sharp and detect-libc)
+        // 7. Copy node_modules cache for backend (preferring verified cache with sharp, @img, and detect-libc)
         console.log(`[Provisioning] Copying node_modules cache for backend...`);
         try {
             const janssenNm = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
-            const kkkNm = '/var/www/vhosts/systego.net/subdomains/api-kkk/node_modules';
             const masterNodeModules = path.join(MASTER_BACKEND_DIR, 'node_modules');
 
-            // Ensure master cache has detect-libc and sharp
+            // Ensure master cache has detect-libc, sharp, and @img binaries
+            const masterHasImg = await fs.access(path.join(masterNodeModules, '@img')).then(() => true).catch(() => false);
             const masterHasDetectLibc = await fs.access(path.join(masterNodeModules, 'detect-libc')).then(() => true).catch(() => false);
-            if (!masterHasDetectLibc) {
-                console.log(`[Provisioning] Master node_modules missing detect-libc, restoring from verified source...`);
-                for (const validSrc of [kkkNm, janssenNm]) {
-                    const hasValid = await fs.access(path.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
-                    if (hasValid) {
-                        await execAsync(`cp -a ${validSrc}/detect-libc ${masterNodeModules}/`).catch(() => {});
-                        await execAsync(`cp -a ${validSrc}/sharp ${masterNodeModules}/`).catch(() => {});
-                        break;
-                    }
-                }
+            if (!masterHasImg || !masterHasDetectLibc) {
+                console.log(`[Provisioning] Master node_modules missing binary prebuilds, syncing from api-janssen...`);
+                await execAsync(`cp -a ${janssenNm}/@img ${masterNodeModules}/`).catch(() => {});
+                await execAsync(`cp -a ${janssenNm}/detect-libc ${masterNodeModules}/`).catch(() => {});
+                await execAsync(`cp -a ${janssenNm}/sharp ${masterNodeModules}/`).catch(() => {});
             }
 
             let sourceNm = masterNodeModules;
             await execAsync(`cp -a ${sourceNm} ${backendDestDir}/`);
 
-            // Ensure detect-libc is definitely in backendDestDir
+            // Verify binary prebuilds in backendDestDir
+            const destHasImg = await fs.access(path.join(backendDestDir, 'node_modules', '@img')).then(() => true).catch(() => false);
             const destHasDetectLibc = await fs.access(path.join(backendDestDir, 'node_modules', 'detect-libc')).then(() => true).catch(() => false);
-            if (!destHasDetectLibc) {
-                for (const validSrc of [kkkNm, janssenNm]) {
-                    const hasValid = await fs.access(path.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
-                    if (hasValid) {
-                        await execAsync(`cp -a ${validSrc}/detect-libc ${backendDestDir}/node_modules/`).catch(() => {});
-                        break;
-                    }
-                }
+            if (!destHasImg || !destHasDetectLibc) {
+                await execAsync(`cp -a ${janssenNm}/@img ${backendDestDir}/node_modules/`).catch(() => {});
+                await execAsync(`cp -a ${janssenNm}/detect-libc ${backendDestDir}/node_modules/`).catch(() => {});
+                await execAsync(`cp -a ${janssenNm}/sharp ${backendDestDir}/node_modules/`).catch(() => {});
             }
         } catch (nmErr: any) {
             console.warn(`[Provisioning] Could not copy node_modules cache: ${nmErr.message}`);

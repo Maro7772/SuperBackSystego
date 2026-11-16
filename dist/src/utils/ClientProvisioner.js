@@ -217,37 +217,29 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
-        // 7. Copy node_modules cache for backend (preferring verified cache with sharp and detect-libc)
+        // 7. Copy node_modules cache for backend (preferring verified cache with sharp, @img, and detect-libc)
         console.log(`[Provisioning] Copying node_modules cache for backend...`);
         try {
             const janssenNm = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
-            const kkkNm = '/var/www/vhosts/systego.net/subdomains/api-kkk/node_modules';
             const masterNodeModules = path_1.default.join(MASTER_BACKEND_DIR, 'node_modules');
-            // Ensure master cache has detect-libc and sharp
+            // Ensure master cache has detect-libc, sharp, and @img binaries
+            const masterHasImg = await promises_1.default.access(path_1.default.join(masterNodeModules, '@img')).then(() => true).catch(() => false);
             const masterHasDetectLibc = await promises_1.default.access(path_1.default.join(masterNodeModules, 'detect-libc')).then(() => true).catch(() => false);
-            if (!masterHasDetectLibc) {
-                console.log(`[Provisioning] Master node_modules missing detect-libc, restoring from verified source...`);
-                for (const validSrc of [kkkNm, janssenNm]) {
-                    const hasValid = await promises_1.default.access(path_1.default.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
-                    if (hasValid) {
-                        await execAsync(`cp -a ${validSrc}/detect-libc ${masterNodeModules}/`).catch(() => { });
-                        await execAsync(`cp -a ${validSrc}/sharp ${masterNodeModules}/`).catch(() => { });
-                        break;
-                    }
-                }
+            if (!masterHasImg || !masterHasDetectLibc) {
+                console.log(`[Provisioning] Master node_modules missing binary prebuilds, syncing from api-janssen...`);
+                await execAsync(`cp -a ${janssenNm}/@img ${masterNodeModules}/`).catch(() => { });
+                await execAsync(`cp -a ${janssenNm}/detect-libc ${masterNodeModules}/`).catch(() => { });
+                await execAsync(`cp -a ${janssenNm}/sharp ${masterNodeModules}/`).catch(() => { });
             }
             let sourceNm = masterNodeModules;
             await execAsync(`cp -a ${sourceNm} ${backendDestDir}/`);
-            // Ensure detect-libc is definitely in backendDestDir
+            // Verify binary prebuilds in backendDestDir
+            const destHasImg = await promises_1.default.access(path_1.default.join(backendDestDir, 'node_modules', '@img')).then(() => true).catch(() => false);
             const destHasDetectLibc = await promises_1.default.access(path_1.default.join(backendDestDir, 'node_modules', 'detect-libc')).then(() => true).catch(() => false);
-            if (!destHasDetectLibc) {
-                for (const validSrc of [kkkNm, janssenNm]) {
-                    const hasValid = await promises_1.default.access(path_1.default.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
-                    if (hasValid) {
-                        await execAsync(`cp -a ${validSrc}/detect-libc ${backendDestDir}/node_modules/`).catch(() => { });
-                        break;
-                    }
-                }
+            if (!destHasImg || !destHasDetectLibc) {
+                await execAsync(`cp -a ${janssenNm}/@img ${backendDestDir}/node_modules/`).catch(() => { });
+                await execAsync(`cp -a ${janssenNm}/detect-libc ${backendDestDir}/node_modules/`).catch(() => { });
+                await execAsync(`cp -a ${janssenNm}/sharp ${backendDestDir}/node_modules/`).catch(() => { });
             }
         }
         catch (nmErr) {
