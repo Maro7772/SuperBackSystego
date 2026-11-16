@@ -960,75 +960,53 @@ const diagnoseClient = async (req, res) => {
         catch (e) {
             diagnostics.nodejsModuleError = e.message;
         }
-        // Test running plesk CLI directly via execAsync
-        diagnostics.pleskCliDirectTests = {};
-        for (const cmd of [
-            'plesk ext nodejs --info -domain janssen.systego.net',
-            '/usr/sbin/plesk ext nodejs --info -domain janssen.systego.net',
-            'sudo -n plesk ext nodejs --info -domain janssen.systego.net',
-            'which plesk',
-            'whoami'
-        ]) {
+        // Test multiple ways to set Node.js app-root on Plesk
+        diagnostics.appRootTests = {};
+        const domain = `${clientName}.systego.net`;
+        const candidateArgs = [
+            ['-app-root', frontendDestDir, '-startup-file', 'server.js'],
+            ['-app-root', `/subdomains/${clientName}`, '-startup-file', 'server.js'],
+            ['-app-root', `subdomains/${clientName}`, '-startup-file', 'server.js'],
+            ['-application-root', frontendDestDir, '-startup-file', 'server.js'],
+            ['-application-root', `/subdomains/${clientName}`, '-startup-file', 'server.js'],
+            ['-startup-file', `${clientName}/server.js`],
+        ];
+        for (const extraArgs of candidateArgs) {
+            const key = extraArgs.join(' ');
             try {
-                const { stdout, stderr } = await execAsync(cmd);
-                diagnostics.pleskCliDirectTests[cmd] = { stdout: stdout.trim(), stderr: stderr.trim() };
-            }
-            catch (cmdErr) {
-                diagnostics.pleskCliDirectTests[cmd] = { error: cmdErr.message };
-            }
-        }
-        // Test executePleskCli with 'extension'
-        diagnostics.pleskExtensionCliTests = {};
-        for (const args of [
-            ['--call', 'nodejs', '--list'],
-            ['--list'],
-            ['-e', 'nodejs', 'cli.php', '--help'],
-            ['-e', 'nodejs', 'post-install.php', '--help']
-        ]) {
-            try {
-                const res = await (0, PleskService_1.executePleskCli)('extension', args);
-                diagnostics.pleskExtensionCliTests[args.join(' ')] = res;
+                const res = await (0, PleskService_1.executePleskCli)('extension', [
+                    '--call', 'nodejs',
+                    '--update',
+                    '-domain', domain,
+                    ...extraArgs
+                ]);
+                diagnostics.appRootTests[key] = { success: true, stdout: res?.stdout || res };
             }
             catch (err) {
-                diagnostics.pleskExtensionCliTests[args.join(' ')] = err.message;
+                diagnostics.appRootTests[key] = { success: false, error: err.message };
             }
         }
-        // Test XML API queries for Node.js
+        // Test auto-configure
         try {
-            const xmlQuery1 = `<?xml version="1.0" encoding="UTF-8"?>
-<packet>
-  <extension>
-    <call>
-      <nodejs>
-        <get-version>
-          <domain>janssen.systego.net</domain>
-        </get-version>
-      </nodejs>
-    </call>
-  </extension>
-</packet>`;
-            diagnostics.xmlGetVersion = await (0, PleskService_1.sendPleskRequest)(xmlQuery1);
+            const autoRes = await (0, PleskService_1.executePleskCli)('extension', [
+                '--call', 'nodejs',
+                '--auto-configure',
+                '-domain', domain
+            ]);
+            diagnostics.appRootTests['--auto-configure'] = { success: true, stdout: autoRes?.stdout || autoRes };
         }
-        catch (xmlErr) {
-            diagnostics.xmlGetVersionError = xmlErr.message;
+        catch (err) {
+            diagnostics.appRootTests['--auto-configure'] = { success: false, error: err.message };
         }
+        // Query current configuration from Plesk list
         try {
-            const xmlQuery2 = `<?xml version="1.0" encoding="UTF-8"?>
-<packet>
-  <extension>
-    <call>
-      <nodejs>
-        <get>
-          <domain>janssen.systego.net</domain>
-        </get>
-      </nodejs>
-    </call>
-  </extension>
-</packet>`;
-            diagnostics.xmlGet = await (0, PleskService_1.sendPleskRequest)(xmlQuery2);
+            const listRes = await (0, PleskService_1.executePleskCli)('extension', ['--call', 'nodejs', '--list']);
+            const lines = (listRes?.stdout || '').split('\n');
+            const domainLine = lines.find((l) => l.includes(domain));
+            diagnostics.currentPleskNodeConfig = domainLine ? domainLine.trim() : 'domain not found in list';
         }
-        catch (xmlErr) {
-            diagnostics.xmlGetError = xmlErr.message;
+        catch (e) {
+            diagnostics.currentPleskNodeConfigError = e.message;
         }
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
