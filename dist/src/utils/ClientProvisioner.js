@@ -482,6 +482,25 @@ async function copyDirectory(src, dest) {
  * Helper: Generates the specialized .env file for the client's backend
  */
 async function generateBackendEnv(destDir, clientName, frontendUrl, dbConfig, superSystegoApiKey) {
+    if (!superSystegoApiKey || superSystegoApiKey === 'default' || superSystegoApiKey === 'NOT_SET') {
+        console.warn(`[Provisioning] WARNING: superSystegoApiKey was passed as '${superSystegoApiKey}'. Generating fallback key.`);
+        const crypto = require('crypto');
+        superSystegoApiKey = `sk_${crypto.randomUUID()}_${crypto.randomBytes(16).toString("hex")}`;
+        try {
+            const { TenantApiKeyModel } = require('../models/schema/auth/TenantApiKey');
+            const { ClientModel } = require('../models/schema/auth/Client');
+            const clientDoc = await ClientModel.findOne({ subdomain: clientName });
+            if (clientDoc) {
+                const hashedKey = crypto.createHash("sha256").update(superSystegoApiKey).digest("hex");
+                await TenantApiKeyModel.updateMany({ client_id: clientDoc._id, active: true }, { $set: { active: false } });
+                await TenantApiKeyModel.create({ client_id: clientDoc._id, hashedKey, label: 'auto-fallback', active: true });
+                console.log(`[Provisioning] Successfully registered fallback API key in DB for client ${clientName}`);
+            }
+        }
+        catch (e) {
+            console.error(`[Provisioning] Could not register fallback API key in DB: ${e.message}`);
+        }
+    }
     const envPath = path_1.default.join(destDir, '.env');
     const tmpPath = path_1.default.join(destDir, '.env.tmp');
     // Customize this based on your backend's required environment variables

@@ -190,7 +190,7 @@ exports.createClient = (0, express_async_handler_1.default)(async (req, res) => 
     const runnerScript = path_1.default.resolve(__dirname, "../../scripts/provisionClientRunner.js");
     try {
         const { spawn } = require("child_process");
-        const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+        const child = spawn(process.execPath, [runnerScript, client._id.toString(), rawApiKey || ""], {
             detached: true,
             stdio: "ignore",
         });
@@ -765,29 +765,23 @@ exports.retryProvisionClient = (0, express_async_handler_1.default)(async (req, 
     client.provisioning_status = "in_progress";
     client.provisioning_error = undefined;
     await client.save();
-    // Find or generate API key
-    let rawApiKey;
-    const existingApiKeyDoc = await TenantApiKey_1.TenantApiKeyModel.findOne({
+    // Always generate a fresh active API key on retry provisioning so the client backend has the matching plaintext key
+    const rawApiKey = `sk_${crypto_1.default.randomUUID()}_${crypto_1.default.randomBytes(16).toString("hex")}`;
+    const hashedKey = crypto_1.default
+        .createHash("sha256")
+        .update(rawApiKey)
+        .digest("hex");
+    await TenantApiKey_1.TenantApiKeyModel.updateMany({ client_id: client._id, active: true }, { $set: { active: false } });
+    await TenantApiKey_1.TenantApiKeyModel.create({
         client_id: client._id,
+        hashedKey,
+        label: "default",
         active: true,
     });
-    if (!existingApiKeyDoc) {
-        rawApiKey = `sk_${crypto_1.default.randomUUID()}_${crypto_1.default.randomBytes(16).toString("hex")}`;
-        const hashedKey = crypto_1.default
-            .createHash("sha256")
-            .update(rawApiKey)
-            .digest("hex");
-        await TenantApiKey_1.TenantApiKeyModel.create({
-            client_id: client._id,
-            hashedKey,
-            label: "default",
-            active: true,
-        });
-    }
     const runnerScript = path_1.default.resolve(__dirname, "../../scripts/provisionClientRunner.js");
     try {
         const { spawn } = require("child_process");
-        const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+        const child = spawn(process.execPath, [runnerScript, client._id.toString(), rawApiKey], {
             detached: true,
             stdio: "ignore",
         });
