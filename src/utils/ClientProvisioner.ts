@@ -121,34 +121,41 @@ export async function provisionNewClient(
 
             if (hasFeServerJs || hasFePkgJson) {
                 console.log(`[Provisioning] Enabling Node.js for Frontend: ${frontendSubdomainUrl}...`);
+
+                // 1. Remove Plesk default placeholder index.html so Nginx routes requests to Passenger / Next.js
+                try {
+                    await fs.unlink(path.join(frontendDestDir, 'index.html'));
+                    console.log(`[Provisioning] ✅ Removed default Plesk index.html for Next.js SSR`);
+                } catch {}
+
+                // 2. Create app.js shim pointing to server.js as a bulletproof fallback for Plesk
+                try {
+                    const appJsPath = path.join(frontendDestDir, 'app.js');
+                    await fs.writeFile(appJsPath, "// Plesk Passenger entrypoint shim\nrequire('./server.js');\n", 'utf-8');
+                    console.log(`[Provisioning] ✅ Created app.js shim pointing to server.js`);
+                } catch {}
+
                 try {
                     await enableNodeJsOnDomain(clientName);
                     console.log(`[Provisioning] ✅ Frontend Node.js enabled via Plesk XML API`);
                 } catch (feXmlErr: any) {
-                    console.warn(`[Provisioning] XML enableNodeJs for frontend failed: ${feXmlErr.message}. Trying CLI...`);
-                    try {
-                        await executePleskCli('extension', [
-                            '--exec', 'nodejs',
-                            '--enable',
-                            '-domain', frontendSubdomainUrl
-                        ]);
-                        console.log(`[Provisioning] ✅ Frontend Node.js enabled via Plesk CLI`);
-                    } catch (feCliErr: any) {
-                        console.warn(`[Provisioning] Frontend enableNodeJs warning: ${feCliErr.message}`);
-                    }
+                    console.warn(`[Provisioning] XML enableNodeJs for frontend warning: ${feXmlErr.message}`);
                 }
 
-                try {
-                    await executePleskCli('extension', [
-                        '--exec', 'nodejs',
-                        '--update',
-                        '-domain', frontendSubdomainUrl,
-                        '-startup-file', 'server.js',
-                        '-app-mode', 'production'
-                    ]);
-                    console.log(`[Provisioning] ✅ Configured frontend startup-file server.js in Plesk`);
-                } catch (feStartupErr: any) {
-                    console.warn(`[Provisioning] Frontend startup-file warning: ${feStartupErr.message}`);
+                // 3. Auto-configure and update Node.js Application Root (/subdomains/<clientName>) and Startup File (server.js)
+                for (const cmd of [
+                    `plesk ext nodejs --update -domain ${frontendSubdomainUrl} -app-root /subdomains/${clientName} -startup-file server.js`,
+                    `/usr/sbin/plesk ext nodejs --update -domain ${frontendSubdomainUrl} -app-root /subdomains/${clientName} -startup-file server.js`,
+                    `plesk ext nodejs --auto-configure -domain ${frontendSubdomainUrl}`,
+                    `/usr/sbin/plesk ext nodejs --auto-configure -domain ${frontendSubdomainUrl}`,
+                ]) {
+                    try {
+                        await execAsync(cmd);
+                        console.log(`[Provisioning] ✅ Configured frontend Node.js via: ${cmd}`);
+                        break;
+                    } catch (e: any) {
+                        console.warn(`[Provisioning] CLI command warning (${cmd}): ${e.message}`);
+                    }
                 }
 
                 // Copy node_modules from master frontend if available, otherwise npm install
@@ -1091,7 +1098,24 @@ export const diagnoseClient = async (req: Request, res: Response) => {
         if (fix) {
             diagnostics.fixResults = {};
 
-            // 1. Fix Frontend Permissions & Document Root
+            // 1. Remove Plesk default placeholder index.html so Nginx routes to Passenger Next.js
+            try {
+                await fs.unlink(path.join(frontendDestDir, 'index.html'));
+                diagnostics.fixResults.removedIndexHtml = "Successfully deleted Plesk default index.html";
+            } catch (unErr: any) {
+                diagnostics.fixResults.removedIndexHtml = `Already deleted or error: ${unErr.message}`;
+            }
+
+            // 1.5. Create app.js shim pointing to server.js
+            try {
+                const appJsPath = path.join(frontendDestDir, 'app.js');
+                await fs.writeFile(appJsPath, "// Plesk Passenger entrypoint shim\nrequire('./server.js');\n", 'utf-8');
+                diagnostics.fixResults.createdAppJsShim = "Created app.js -> server.js shim";
+            } catch (shimErr: any) {
+                diagnostics.fixResults.createdAppJsShim = `Error: ${shimErr.message}`;
+            }
+
+            // 2. Fix Frontend Permissions & Document Root
             try {
                 await execAsync(`chmod -R 755 ${frontendDestDir}`);
                 await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
@@ -1110,25 +1134,26 @@ export const diagnoseClient = async (req: Request, res: Response) => {
                 diagnostics.fixResults.frontendSiteWwwRoot = `Error: ${siteErr.message}`;
             }
 
-            // 2. Enable Node.js on Frontend (Next.js server.js)
+            // 2.5. Enable Node.js and Auto-configure on Frontend
             try {
                 try {
                     await enableNodeJsOnDomain(clientName);
-                } catch {
-                    await executePleskCli('extension', [
-                        '--exec', 'nodejs',
-                        '--enable',
-                        '-domain', `${clientName}.systego.net`
-                    ]);
+                } catch {}
+
+                let configuredCmd = 'none';
+                for (const cmd of [
+                    `plesk ext nodejs --update -domain ${clientName}.systego.net -app-root /subdomains/${clientName} -startup-file server.js`,
+                    `/usr/sbin/plesk ext nodejs --update -domain ${clientName}.systego.net -app-root /subdomains/${clientName} -startup-file server.js`,
+                    `plesk ext nodejs --auto-configure -domain ${clientName}.systego.net`,
+                    `/usr/sbin/plesk ext nodejs --auto-configure -domain ${clientName}.systego.net`,
+                ]) {
+                    try {
+                        await execAsync(cmd);
+                        configuredCmd = cmd;
+                        break;
+                    } catch {}
                 }
-                await executePleskCli('extension', [
-                    '--exec', 'nodejs',
-                    '--update',
-                    '-domain', `${clientName}.systego.net`,
-                    '-startup-file', 'server.js',
-                    '-app-mode', 'production'
-                ]);
-                diagnostics.fixResults.frontendNodeJs = "Enabled with startup-file server.js";
+                diagnostics.fixResults.frontendNodeJs = `Configured via CLI: ${configuredCmd}`;
             } catch (fnErr: any) {
                 diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
             }
