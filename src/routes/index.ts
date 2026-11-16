@@ -50,6 +50,35 @@ route.get('/debug-node', async (req: Request, res: Response) => {
             }
         }
 
+        // Check backend error log and files
+        const fs = require('fs/promises');
+        const path = require('path');
+        const backendDir = `/var/www/vhosts/systego.net/subdomains/api-${client}`;
+        try {
+            results.backendErrorLog = await fs.readFile(path.join(backendDir, 'startup-error.log'), 'utf-8');
+        } catch (e: any) {
+            results.backendErrorLog = e.message;
+        }
+
+        try {
+            results.backendFiles = await fs.readdir(backendDir);
+        } catch (e: any) {
+            results.backendFiles = e.message;
+        }
+
+        try {
+            results.backendNodeInfo = await executePleskCli('extension', ['--call', 'nodejs', '--info', '-domain', `api-${client}.systego.net`]);
+        } catch (e: any) {
+            results.backendNodeInfo = e.message;
+        }
+
+        // Check subdomain info
+        try {
+            results.subdomainInfo = await executePleskCli('subdomain', ['--info', domain]);
+        } catch (e: any) {
+            results.subdomainInfo = e.message;
+        }
+
         // 5. If custom args provided
         if (req.query.cmd) {
             try {
