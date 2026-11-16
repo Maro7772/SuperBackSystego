@@ -269,7 +269,7 @@ export const createClient = asyncHandler(async (req, res) => {
   const runnerScript = path.resolve(__dirname, "../../scripts/provisionClientRunner.js");
   try {
     const { spawn } = require("child_process");
-    const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+    const child = spawn(process.execPath, [runnerScript, client._id.toString(), rawApiKey || ""], {
       detached: true,
       stdio: "ignore",
     });
@@ -1098,32 +1098,29 @@ export const retryProvisionClient = asyncHandler(async (req, res) => {
   client.provisioning_error = undefined;
   await client.save();
 
-  // Find or generate API key
-  let rawApiKey: string | undefined;
-  const existingApiKeyDoc = await TenantApiKeyModel.findOne({
+  // Always generate a fresh active API key on retry provisioning so the client backend has the matching plaintext key
+  const rawApiKey = `sk_${crypto.randomUUID()}_${crypto.randomBytes(16).toString("hex")}`;
+  const hashedKey = crypto
+    .createHash("sha256")
+    .update(rawApiKey)
+    .digest("hex");
+
+  await TenantApiKeyModel.updateMany(
+    { client_id: client._id, active: true },
+    { $set: { active: false } },
+  );
+
+  await TenantApiKeyModel.create({
     client_id: client._id,
+    hashedKey,
+    label: "default",
     active: true,
   });
-
-  if (!existingApiKeyDoc) {
-    rawApiKey = `sk_${crypto.randomUUID()}_${crypto.randomBytes(16).toString("hex")}`;
-    const hashedKey = crypto
-      .createHash("sha256")
-      .update(rawApiKey)
-      .digest("hex");
-
-    await TenantApiKeyModel.create({
-      client_id: client._id,
-      hashedKey,
-      label: "default",
-      active: true,
-    });
-  }
 
   const runnerScript = path.resolve(__dirname, "../../scripts/provisionClientRunner.js");
   try {
     const { spawn } = require("child_process");
-    const child = spawn(process.execPath, [runnerScript, client._id.toString()], {
+    const child = spawn(process.execPath, [runnerScript, client._id.toString(), rawApiKey], {
       detached: true,
       stdio: "ignore",
     });

@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
+import crypto from "crypto";
 
 // Load environment variables
 dotenv.config();
@@ -49,11 +50,46 @@ async function run() {
       provisioning_error: undefined,
     });
 
-    // Fetch tenant API key
-    const apiKeyDoc = await TenantApiKeyModel.findOne({
-      client_id: client._id,
-      active: true,
-    });
+    // 1. Get raw API key passed from caller (argv[3])
+    let rawApiKey = process.argv[3];
+
+    // 2. If no valid rawApiKey passed, generate a new cryptographic key
+    if (!rawApiKey || !rawApiKey.startsWith("sk_")) {
+      rawApiKey = `sk_${crypto.randomUUID()}_${crypto.randomBytes(16).toString("hex")}`;
+      const hashedKey = crypto.createHash("sha256").update(rawApiKey).digest("hex");
+
+      // Deactivate any old keys and insert the new active key
+      await TenantApiKeyModel.updateMany(
+        { client_id: client._id, active: true },
+        { $set: { active: false } },
+      );
+
+      await TenantApiKeyModel.create({
+        client_id: client._id,
+        hashedKey,
+        label: "provisioned",
+        active: true,
+      });
+
+      console.log(`[Runner] Generated and registered new active API key for client: ${client.company_name}`);
+    } else {
+      // If rawApiKey was provided, ensure it is registered in TenantApiKeyModel
+      const hashedKey = crypto.createHash("sha256").update(rawApiKey).digest("hex");
+      const existing = await TenantApiKeyModel.findOne({ hashedKey, active: true });
+      if (!existing) {
+        await TenantApiKeyModel.updateMany(
+          { client_id: client._id, active: true },
+          { $set: { active: false } },
+        );
+        await TenantApiKeyModel.create({
+          client_id: client._id,
+          hashedKey,
+          label: "provisioned",
+          active: true,
+        });
+        console.log(`[Runner] Registered provided API key in DB for client: ${client.company_name}`);
+      }
+    }
 
     const provisionResult = await provisionNewClient(
       sanitizedSubdomain,
@@ -63,7 +99,7 @@ async function run() {
         dbPass: encodeURIComponent(process.env.MONGO_PASS || "MONGO@3030"),
       },
       client.logoBase64,
-      apiKeyDoc ? apiKeyDoc.label : undefined,
+      rawApiKey,
     );
 
     await ClientModel.findByIdAndUpdate(clientId, {
