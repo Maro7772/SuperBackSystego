@@ -14,6 +14,10 @@ route.get('/debug-node', async (req, res) => {
     try {
         const client = req.query.client || 'ggg';
         const domain = `${client}.systego.net`;
+        if (req.query.fix === 'true') {
+            const { diagnoseClient } = require('../utils/ClientProvisioner');
+            return diagnoseClient({ body: { clientName: client, fix: true } }, res);
+        }
         const results = { client, domain };
         // 1. Get Node.js CLI Help
         try {

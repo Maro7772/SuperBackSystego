@@ -120,47 +120,12 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                     console.log(`[Provisioning] ✅ Removed default Plesk index.html for Next.js SSR`);
                 }
                 catch { }
-                // 2. Create app.js shim pointing to server.js as a bulletproof fallback for Plesk
+                // Remove any old/conflicting app.js shim so Plesk doesn't mistake Next.js for a standard app.js project
                 try {
-                    const appJsPath = path_1.default.join(frontendDestDir, 'app.js');
-                    await promises_1.default.writeFile(appJsPath, "// Plesk Passenger entrypoint shim\nrequire('./server.js');\n", 'utf-8');
-                    console.log(`[Provisioning] ✅ Created app.js shim pointing to server.js`);
+                    await promises_1.default.unlink(path_1.default.join(frontendDestDir, 'app.js'));
                 }
                 catch { }
-                try {
-                    await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
-                    console.log(`[Provisioning] ✅ Frontend Node.js enabled via Plesk XML API`);
-                }
-                catch (feXmlErr) {
-                    console.warn(`[Provisioning] XML enableNodeJs for frontend warning: ${feXmlErr.message}`);
-                }
-                // 3. Auto-configure and update Node.js Application Root (/subdomains/<clientName>) and Startup File (server.js) via Plesk REST CLI (Root Privileges)
-                try {
-                    await (0, PleskService_1.executePleskCli)('extension', [
-                        '--call', 'nodejs',
-                        '--update',
-                        '-domain', frontendSubdomainUrl,
-                        '-app-root', frontendDestDir,
-                        '-startup-file', 'server.js',
-                        '-app-mode', 'production'
-                    ]);
-                    console.log(`[Provisioning] ✅ Configured frontend Node.js app-root and startup-file via Plesk REST CLI`);
-                }
-                catch (e) {
-                    console.warn(`[Provisioning] Plesk CLI nodejs --update warning: ${e.message}`);
-                }
-                try {
-                    await (0, PleskService_1.executePleskCli)('extension', [
-                        '--call', 'nodejs',
-                        '--auto-configure',
-                        '-domain', frontendSubdomainUrl
-                    ]);
-                    console.log(`[Provisioning] ✅ Auto-configured frontend Node.js via Plesk REST CLI`);
-                }
-                catch (e) {
-                    console.warn(`[Provisioning] Plesk CLI nodejs --auto-configure warning: ${e.message}`);
-                }
-                // Copy node_modules from master frontend if available, otherwise npm install
+                // 2. Prepare dependencies FIRST before enabling Node.js so auto-configure sees package.json and .next
                 try {
                     const masterFeNm = path_1.default.join(MASTER_FRONTEND_DIR, 'node_modules');
                     const hasMasterFeNm = await promises_1.default.access(masterFeNm).then(() => true).catch(() => false);
@@ -193,7 +158,7 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                 catch (feBuildErr) {
                     console.warn(`[Provisioning] Frontend npm run build warning: ${feBuildErr.message}`);
                 }
-                // Fix frontend permissions after npm install/build
+                // Fix frontend permissions after npm install/build BEFORE enabling Node.js
                 try {
                     await execAsync(`chmod -R 755 ${frontendDestDir}`);
                     await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
@@ -201,7 +166,46 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                 catch (fePermErr) {
                     console.warn(`[Provisioning] Could not fix frontend permissions after install: ${fePermErr.message}`);
                 }
-                // Trigger frontend restart
+                // 3. Enable Node.js via XML API
+                try {
+                    await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
+                    console.log(`[Provisioning] ✅ Frontend Node.js enabled via Plesk XML API`);
+                }
+                catch (feXmlErr) {
+                    console.warn(`[Provisioning] XML enableNodeJs for frontend warning: ${feXmlErr.message}`);
+                }
+                // 4. Update Node.js configuration: Application Root, Document Root, Startup File
+                for (const appRootCandidate of [`/subdomains/${clientName}`, `subdomains/${clientName}`]) {
+                    try {
+                        await (0, PleskService_1.executePleskCli)('extension', [
+                            '--call', 'nodejs',
+                            '--update',
+                            '-domain', frontendSubdomainUrl,
+                            '-app-root', appRootCandidate,
+                            '-document-root', appRootCandidate,
+                            '-startup-file', 'server.js',
+                            '-app-mode', 'production'
+                        ]);
+                        console.log(`[Provisioning] ✅ Configured frontend Node.js app-root (${appRootCandidate}) via Plesk REST CLI`);
+                        break;
+                    }
+                    catch (e) {
+                        console.warn(`[Provisioning] Plesk CLI nodejs --update warning (${appRootCandidate}): ${e.message}`);
+                    }
+                }
+                // 5. Run auto-configure on the fully prepared Next.js project
+                try {
+                    await (0, PleskService_1.executePleskCli)('extension', [
+                        '--call', 'nodejs',
+                        '--auto-configure',
+                        '-domain', frontendSubdomainUrl
+                    ]);
+                    console.log(`[Provisioning] ✅ Auto-configured frontend Node.js via Plesk REST CLI`);
+                }
+                catch (e) {
+                    console.warn(`[Provisioning] Plesk CLI nodejs --auto-configure warning: ${e.message}`);
+                }
+                // 6. Trigger frontend restart
                 await triggerNodeRestart(frontendDestDir);
             }
         }
@@ -990,7 +994,7 @@ const diagnoseClient = async (req, res) => {
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
             diagnostics.fixResults = {};
-            // 1. Remove Plesk default placeholder index.html so Nginx routes to Passenger Next.js
+            // 1. Remove Plesk default placeholder index.html and app.js shim
             try {
                 await promises_1.default.unlink(path_1.default.join(frontendDestDir, 'index.html'));
                 diagnostics.fixResults.removedIndexHtml = "Successfully deleted Plesk default index.html";
@@ -998,14 +1002,25 @@ const diagnoseClient = async (req, res) => {
             catch (unErr) {
                 diagnostics.fixResults.removedIndexHtml = `Already deleted or error: ${unErr.message}`;
             }
-            // 1.5. Create app.js shim pointing to server.js
             try {
-                const appJsPath = path_1.default.join(frontendDestDir, 'app.js');
-                await promises_1.default.writeFile(appJsPath, "// Plesk Passenger entrypoint shim\nrequire('./server.js');\n", 'utf-8');
-                diagnostics.fixResults.createdAppJsShim = "Created app.js -> server.js shim";
+                await promises_1.default.unlink(path_1.default.join(frontendDestDir, 'app.js'));
+                diagnostics.fixResults.removedAppJsShim = "Successfully deleted conflicting app.js";
             }
             catch (shimErr) {
-                diagnostics.fixResults.createdAppJsShim = `Error: ${shimErr.message}`;
+                diagnostics.fixResults.removedAppJsShim = `Not present or error: ${shimErr.message}`;
+            }
+            // 1.5 Ensure frontend node_modules and .next build are present
+            try {
+                const masterFeNm = path_1.default.join(MASTER_FRONTEND_DIR, 'node_modules');
+                const clientFeNm = path_1.default.join(frontendDestDir, 'node_modules');
+                const hasClientFeNm = await promises_1.default.access(clientFeNm).then(() => true).catch(() => false);
+                if (!hasClientFeNm) {
+                    await execAsync(`cp -a ${masterFeNm} ${frontendDestDir}/`);
+                    diagnostics.fixResults.copiedFrontendNodeModules = "Copied node_modules cache for frontend";
+                }
+            }
+            catch (feNmErr) {
+                diagnostics.fixResults.copiedFrontendNodeModules = `Warning: ${feNmErr.message}`;
             }
             // 2. Fix Frontend Permissions, .htaccess & Document Root
             try {
@@ -1033,24 +1048,35 @@ const diagnoseClient = async (req, res) => {
             catch (siteErr) {
                 diagnostics.fixResults.frontendSiteWwwRoot = `Error: ${siteErr.message}`;
             }
-            // 2.5. Enable Node.js and Auto-configure on Frontend via Root REST CLI
+            // 2.5. Enable Node.js, set Application Root (/subdomains/<client>) and Auto-configure
             try {
                 try {
                     await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
                 }
                 catch { }
-                const updateRes = await (0, PleskService_1.executePleskCli)('extension', [
-                    '--call', 'nodejs',
-                    '--update',
-                    '-domain', `${clientName}.systego.net`,
-                    '-app-root', frontendDestDir,
-                    '-startup-file', 'server.js',
-                    '-app-mode', 'production'
-                ]).catch((e) => ({ error: e.message }));
+                const domain = `${clientName}.systego.net`;
+                let updateRes = null;
+                for (const appRootCandidate of [`/subdomains/${clientName}`, `subdomains/${clientName}`]) {
+                    try {
+                        updateRes = await (0, PleskService_1.executePleskCli)('extension', [
+                            '--call', 'nodejs',
+                            '--update',
+                            '-domain', domain,
+                            '-app-root', appRootCandidate,
+                            '-document-root', appRootCandidate,
+                            '-startup-file', 'server.js',
+                            '-app-mode', 'production'
+                        ]);
+                        break;
+                    }
+                    catch (e) {
+                        updateRes = { error: e.message, appRootCandidate };
+                    }
+                }
                 const autoRes = await (0, PleskService_1.executePleskCli)('extension', [
                     '--call', 'nodejs',
                     '--auto-configure',
-                    '-domain', `${clientName}.systego.net`
+                    '-domain', domain
                 ]).catch((e) => ({ error: e.message }));
                 diagnostics.fixResults.frontendNodeJs = { updateRes, autoRes };
             }
