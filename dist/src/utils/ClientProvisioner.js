@@ -174,6 +174,9 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                 catch (feXmlErr) {
                     console.warn(`[Provisioning] XML enableNodeJs for frontend warning: ${feXmlErr.message}`);
                 }
+                // Wait 2 seconds for Plesk extension to register the domain
+                const { setTimeout: sleep } = require('timers/promises');
+                await sleep(2000);
                 // 4. Update Node.js configuration: Application Root, Document Root, Startup File
                 try {
                     await (0, PleskService_1.executePleskCli)('extension', [
@@ -185,7 +188,7 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                         '-startup-file', 'server.js',
                         '-mode', 'production'
                     ]);
-                    console.log(`[Provisioning] ✅ Configured frontend Node.js application-root (/subdomains/${clientName}) via Plesk REST CLI`);
+                    console.log(`[Provisioning] ✅ Configured frontend Node.js application-root (/subdomains/${clientName}) and startup-file server.js via Plesk REST CLI`);
                 }
                 catch (e) {
                     console.warn(`[Provisioning] Plesk CLI nodejs --update warning: ${e.message}`);
@@ -214,24 +217,38 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
         await copyDirectory(MASTER_BACKEND_DIR, backendDestDir);
         // 6. Generate client-specific .env file for the Node.js backend
         await generateBackendEnv(backendDestDir, clientName, frontendSubdomainUrl, dbConfig, superSystegoApiKey);
-        // 7. Copy node_modules cache for backend (preferring verified cache with sharp)
+        // 7. Copy node_modules cache for backend (preferring verified cache with sharp and detect-libc)
         console.log(`[Provisioning] Copying node_modules cache for backend...`);
         try {
             const janssenNm = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
+            const kkkNm = '/var/www/vhosts/systego.net/subdomains/api-kkk/node_modules';
             const masterNodeModules = path_1.default.join(MASTER_BACKEND_DIR, 'node_modules');
-            let sourceNm = masterNodeModules;
-            try {
-                await promises_1.default.access(path_1.default.join(masterNodeModules, 'sharp'));
-            }
-            catch {
-                try {
-                    await promises_1.default.access(path_1.default.join(janssenNm, 'sharp'));
-                    sourceNm = janssenNm;
-                    console.log(`[Provisioning] Master missing sharp, using verified node_modules from api-janssen`);
+            // Ensure master cache has detect-libc and sharp
+            const masterHasDetectLibc = await promises_1.default.access(path_1.default.join(masterNodeModules, 'detect-libc')).then(() => true).catch(() => false);
+            if (!masterHasDetectLibc) {
+                console.log(`[Provisioning] Master node_modules missing detect-libc, restoring from verified source...`);
+                for (const validSrc of [kkkNm, janssenNm]) {
+                    const hasValid = await promises_1.default.access(path_1.default.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
+                    if (hasValid) {
+                        await execAsync(`cp -a ${validSrc}/detect-libc ${masterNodeModules}/`).catch(() => { });
+                        await execAsync(`cp -a ${validSrc}/sharp ${masterNodeModules}/`).catch(() => { });
+                        break;
+                    }
                 }
-                catch { }
             }
+            let sourceNm = masterNodeModules;
             await execAsync(`cp -a ${sourceNm} ${backendDestDir}/`);
+            // Ensure detect-libc is definitely in backendDestDir
+            const destHasDetectLibc = await promises_1.default.access(path_1.default.join(backendDestDir, 'node_modules', 'detect-libc')).then(() => true).catch(() => false);
+            if (!destHasDetectLibc) {
+                for (const validSrc of [kkkNm, janssenNm]) {
+                    const hasValid = await promises_1.default.access(path_1.default.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
+                    if (hasValid) {
+                        await execAsync(`cp -a ${validSrc}/detect-libc ${backendDestDir}/node_modules/`).catch(() => { });
+                        break;
+                    }
+                }
+            }
         }
         catch (nmErr) {
             console.warn(`[Provisioning] Could not copy node_modules cache: ${nmErr.message}`);
@@ -338,6 +355,9 @@ try {
                 console.warn(`[Provisioning] Plesk CLI enableNodeJs warning: ${cliNodeErr.message}`);
             }
         }
+        // Wait 2 seconds for Plesk extension to register the backend domain
+        const { setTimeout: sleepBackend } = require('timers/promises');
+        await sleepBackend(2000);
         // 14. Configure application root, document root, startup file and mode in Plesk
         try {
             await (0, PleskService_1.executePleskCli)('extension', [
@@ -346,13 +366,25 @@ try {
                 '-domain', backendSubdomainUrl,
                 '-application-root', `/subdomains/api-${clientName}`,
                 '-document-root', `/subdomains/api-${clientName}/public`,
-                '-startup-file', 'dist/src/server.js',
+                '-startup-file', 'app.js',
                 '-mode', 'production'
             ]);
-            console.log(`[Provisioning] ✅ Configured backend nodejs settings in Plesk`);
+            console.log(`[Provisioning] ✅ Configured backend nodejs settings in Plesk (startup-file: app.js)`);
         }
         catch (updateErr) {
             console.warn(`[Provisioning] Could not update backend nodejs settings in Plesk: ${updateErr.message}`);
+        }
+        // Also restart backend via Plesk CLI
+        try {
+            await (0, PleskService_1.executePleskCli)('extension', [
+                '--call', 'nodejs',
+                '--restart',
+                '-domain', backendSubdomainUrl
+            ]);
+            console.log(`[Provisioning] ✅ Restarted backend Node.js via Plesk REST CLI`);
+        }
+        catch (bRestartErr) {
+            console.warn(`[Provisioning] Backend restart warning: ${bRestartErr.message}`);
         }
         // 15. Fix file ownership and permissions for Plesk Passenger
         try {
@@ -1085,18 +1117,46 @@ const diagnoseClient = async (req, res) => {
             catch (fnErr) {
                 diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
             }
-            // 3. Fix Backend Modules (Restore sharp by copying verified node_modules from api-janssen)
+            // 3. Fix Backend Modules (Restore sharp and detect-libc from verified sources)
             try {
                 const janssenNodeModules = '/var/www/vhosts/systego.net/subdomains/api-janssen/node_modules';
+                const kkkNodeModules = '/var/www/vhosts/systego.net/subdomains/api-kkk/node_modules';
                 const masterNodeModules = '/var/www/vhosts/systego.net/master-builds/backend-latest/node_modules';
-                // Update master cache so future provisions are fixed
-                await execAsync(`cp -a ${janssenNodeModules}/sharp ${masterNodeModules}/`).catch(() => { });
-                // Copy to this client backend
-                await execAsync(`cp -a ${janssenNodeModules} ${backendDestDir}/`);
-                diagnostics.fixResults.backendNodeModules = "Copied verified node_modules with sharp from api-janssen";
+                for (const validSrc of [kkkNodeModules, janssenNodeModules]) {
+                    const hasValid = await promises_1.default.access(path_1.default.join(validSrc, 'detect-libc')).then(() => true).catch(() => false);
+                    if (hasValid) {
+                        await execAsync(`cp -a ${validSrc}/detect-libc ${masterNodeModules}/`).catch(() => { });
+                        await execAsync(`cp -a ${validSrc}/sharp ${masterNodeModules}/`).catch(() => { });
+                        await execAsync(`cp -a ${validSrc}/detect-libc ${backendDestDir}/node_modules/`).catch(() => { });
+                        break;
+                    }
+                }
+                diagnostics.fixResults.backendNodeModules = "Ensured detect-libc & sharp in master and backend";
             }
             catch (bnmErr) {
                 diagnostics.fixResults.backendNodeModules = `Error: ${bnmErr.message}`;
+            }
+            // 3.5 Configure Backend Node.js settings in Plesk (Application root, Document root, Startup file app.js)
+            try {
+                const backendDomain = `api-${clientName}.systego.net`;
+                await (0, PleskService_1.executePleskCli)('extension', [
+                    '--call', 'nodejs',
+                    '--update',
+                    '-domain', backendDomain,
+                    '-application-root', `/subdomains/api-${clientName}`,
+                    '-document-root', `/subdomains/api-${clientName}/public`,
+                    '-startup-file', 'app.js',
+                    '-mode', 'production'
+                ]);
+                await (0, PleskService_1.executePleskCli)('extension', [
+                    '--call', 'nodejs',
+                    '--restart',
+                    '-domain', backendDomain
+                ]);
+                diagnostics.fixResults.backendNodeJs = "Configured startup-file app.js and restarted backend via Plesk CLI";
+            }
+            catch (bneErr) {
+                diagnostics.fixResults.backendNodeJs = `Error: ${bneErr.message}`;
             }
             // 4. Fix Backend MongoDB port in .env (change 27017 to 32768)
             try {
