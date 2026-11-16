@@ -148,8 +148,9 @@ export async function provisionNewClient(
                         '--call', 'nodejs',
                         '--update',
                         '-domain', frontendSubdomainUrl,
-                        '-app-root', `/subdomains/${clientName}`,
-                        '-startup-file', 'server.js'
+                        '-app-root', frontendDestDir,
+                        '-startup-file', 'server.js',
+                        '-app-mode', 'production'
                     ]);
                     console.log(`[Provisioning] ✅ Configured frontend Node.js app-root and startup-file via Plesk REST CLI`);
                 } catch (e: any) {
@@ -1027,43 +1028,20 @@ export const diagnoseClient = async (req: Request, res: Response) => {
             diagnostics.nodejsModuleError = e.message;
         }
 
-        // Test multiple ways to set Node.js app-root on Plesk
-        diagnostics.appRootTests = {};
+        // Test setting exact filesystem absolute path for Node.js app-root
         const domain = `${clientName}.systego.net`;
-        const candidateArgs = [
-            ['-app-root', frontendDestDir, '-startup-file', 'server.js'],
-            ['-app-root', `/subdomains/${clientName}`, '-startup-file', 'server.js'],
-            ['-app-root', `subdomains/${clientName}`, '-startup-file', 'server.js'],
-            ['-application-root', frontendDestDir, '-startup-file', 'server.js'],
-            ['-application-root', `/subdomains/${clientName}`, '-startup-file', 'server.js'],
-            ['-startup-file', `${clientName}/server.js`],
-        ];
-
-        for (const extraArgs of candidateArgs) {
-            const key = extraArgs.join(' ');
-            try {
-                const res = await executePleskCli('extension', [
-                    '--call', 'nodejs',
-                    '--update',
-                    '-domain', domain,
-                    ...extraArgs
-                ]);
-                diagnostics.appRootTests[key] = { success: true, stdout: res?.stdout || res };
-            } catch (err: any) {
-                diagnostics.appRootTests[key] = { success: false, error: err.message };
-            }
-        }
-
-        // Test auto-configure
         try {
-            const autoRes = await executePleskCli('extension', [
+            const res = await executePleskCli('extension', [
                 '--call', 'nodejs',
-                '--auto-configure',
-                '-domain', domain
+                '--update',
+                '-domain', domain,
+                '-app-root', frontendDestDir,
+                '-startup-file', 'server.js',
+                '-app-mode', 'production'
             ]);
-            diagnostics.appRootTests['--auto-configure'] = { success: true, stdout: autoRes?.stdout || autoRes };
+            diagnostics.updateAppRootResult = { success: true, res };
         } catch (err: any) {
-            diagnostics.appRootTests['--auto-configure'] = { success: false, error: err.message };
+            diagnostics.updateAppRootResult = { success: false, error: err.message };
         }
 
         // Query current configuration from Plesk list
@@ -1133,8 +1111,9 @@ export const diagnoseClient = async (req: Request, res: Response) => {
                     '--call', 'nodejs',
                     '--update',
                     '-domain', `${clientName}.systego.net`,
-                    '-app-root', `/subdomains/${clientName}`,
-                    '-startup-file', 'server.js'
+                    '-app-root', frontendDestDir,
+                    '-startup-file', 'server.js',
+                    '-app-mode', 'production'
                 ]).catch((e) => ({ error: e.message }));
 
                 const autoRes = await executePleskCli('extension', [
