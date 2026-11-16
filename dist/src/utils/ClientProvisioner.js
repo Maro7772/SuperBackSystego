@@ -175,35 +175,32 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                     console.warn(`[Provisioning] XML enableNodeJs for frontend warning: ${feXmlErr.message}`);
                 }
                 // 4. Update Node.js configuration: Application Root, Document Root, Startup File
-                for (const appRootCandidate of [`/subdomains/${clientName}`, `subdomains/${clientName}`]) {
-                    try {
-                        await (0, PleskService_1.executePleskCli)('extension', [
-                            '--call', 'nodejs',
-                            '--update',
-                            '-domain', frontendSubdomainUrl,
-                            '-app-root', appRootCandidate,
-                            '-document-root', appRootCandidate,
-                            '-startup-file', 'server.js',
-                            '-app-mode', 'production'
-                        ]);
-                        console.log(`[Provisioning] ✅ Configured frontend Node.js app-root (${appRootCandidate}) via Plesk REST CLI`);
-                        break;
-                    }
-                    catch (e) {
-                        console.warn(`[Provisioning] Plesk CLI nodejs --update warning (${appRootCandidate}): ${e.message}`);
-                    }
-                }
-                // 5. Run auto-configure on the fully prepared Next.js project
                 try {
                     await (0, PleskService_1.executePleskCli)('extension', [
                         '--call', 'nodejs',
-                        '--auto-configure',
-                        '-domain', frontendSubdomainUrl
+                        '--update',
+                        '-domain', frontendSubdomainUrl,
+                        '-application-root', `/subdomains/${clientName}`,
+                        '-document-root', `/subdomains/${clientName}`,
+                        '-startup-file', 'server.js',
+                        '-mode', 'production'
                     ]);
-                    console.log(`[Provisioning] ✅ Auto-configured frontend Node.js via Plesk REST CLI`);
+                    console.log(`[Provisioning] ✅ Configured frontend Node.js application-root (/subdomains/${clientName}) via Plesk REST CLI`);
                 }
                 catch (e) {
-                    console.warn(`[Provisioning] Plesk CLI nodejs --auto-configure warning: ${e.message}`);
+                    console.warn(`[Provisioning] Plesk CLI nodejs --update warning: ${e.message}`);
+                }
+                // 5. Restart frontend app via Plesk CLI
+                try {
+                    await (0, PleskService_1.executePleskCli)('extension', [
+                        '--call', 'nodejs',
+                        '--restart',
+                        '-domain', frontendSubdomainUrl
+                    ]);
+                    console.log(`[Provisioning] ✅ Restarted frontend Node.js via Plesk REST CLI`);
+                }
+                catch (e) {
+                    console.warn(`[Provisioning] Plesk CLI nodejs --restart warning: ${e.message}`);
                 }
                 // 6. Trigger frontend restart
                 await triggerNodeRestart(frontendDestDir);
@@ -341,19 +338,21 @@ try {
                 console.warn(`[Provisioning] Plesk CLI enableNodeJs warning: ${cliNodeErr.message}`);
             }
         }
-        // 14. Configure startup file and app-mode in Plesk
+        // 14. Configure application root, document root, startup file and mode in Plesk
         try {
             await (0, PleskService_1.executePleskCli)('extension', [
-                '--exec', 'nodejs',
+                '--call', 'nodejs',
                 '--update',
                 '-domain', backendSubdomainUrl,
+                '-application-root', `/subdomains/api-${clientName}`,
+                '-document-root', `/subdomains/api-${clientName}/public`,
                 '-startup-file', 'dist/src/server.js',
-                '-app-mode', 'production'
+                '-mode', 'production'
             ]);
-            console.log(`[Provisioning] ✅ Configured startup file dist/src/server.js in Plesk`);
+            console.log(`[Provisioning] ✅ Configured backend nodejs settings in Plesk`);
         }
         catch (updateErr) {
-            console.warn(`[Provisioning] Could not update nodejs startup-file in Plesk: ${updateErr.message}`);
+            console.warn(`[Provisioning] Could not update backend nodejs settings in Plesk: ${updateErr.message}`);
         }
         // 15. Fix file ownership and permissions for Plesk Passenger
         try {
@@ -1048,7 +1047,7 @@ const diagnoseClient = async (req, res) => {
             catch (siteErr) {
                 diagnostics.fixResults.frontendSiteWwwRoot = `Error: ${siteErr.message}`;
             }
-            // 2.5. Enable Node.js, set Application Root (/subdomains/<client>) and Auto-configure
+            // 2.5. Enable Node.js, set Application Root (/subdomains/<client>) and restart
             try {
                 try {
                     await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
@@ -1056,29 +1055,32 @@ const diagnoseClient = async (req, res) => {
                 catch { }
                 const domain = `${clientName}.systego.net`;
                 let updateRes = null;
-                for (const appRootCandidate of [`/subdomains/${clientName}`, `subdomains/${clientName}`]) {
-                    try {
-                        updateRes = await (0, PleskService_1.executePleskCli)('extension', [
-                            '--call', 'nodejs',
-                            '--update',
-                            '-domain', domain,
-                            '-app-root', appRootCandidate,
-                            '-document-root', appRootCandidate,
-                            '-startup-file', 'server.js',
-                            '-app-mode', 'production'
-                        ]);
-                        break;
-                    }
-                    catch (e) {
-                        updateRes = { error: e.message, appRootCandidate };
-                    }
+                try {
+                    updateRes = await (0, PleskService_1.executePleskCli)('extension', [
+                        '--call', 'nodejs',
+                        '--update',
+                        '-domain', domain,
+                        '-application-root', `/subdomains/${clientName}`,
+                        '-document-root', `/subdomains/${clientName}`,
+                        '-startup-file', 'server.js',
+                        '-mode', 'production'
+                    ]);
                 }
-                const autoRes = await (0, PleskService_1.executePleskCli)('extension', [
-                    '--call', 'nodejs',
-                    '--auto-configure',
-                    '-domain', domain
-                ]).catch((e) => ({ error: e.message }));
-                diagnostics.fixResults.frontendNodeJs = { updateRes, autoRes };
+                catch (e) {
+                    updateRes = { error: e.message };
+                }
+                let restartRes = null;
+                try {
+                    restartRes = await (0, PleskService_1.executePleskCli)('extension', [
+                        '--call', 'nodejs',
+                        '--restart',
+                        '-domain', domain
+                    ]);
+                }
+                catch (e) {
+                    restartRes = { error: e.message };
+                }
+                diagnostics.fixResults.frontendNodeJs = { updateRes, restartRes };
             }
             catch (fnErr) {
                 diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
