@@ -946,16 +946,66 @@ const diagnoseClient = async (req, res) => {
             diagnostics.janssenSharpExists = false;
         }
         try {
+            diagnostics.nodejsModuleDir = await promises_1.default.readdir('/opt/psa/admin/plib/modules/nodejs');
             diagnostics.nodejsModuleScripts = await promises_1.default.readdir('/opt/psa/admin/plib/modules/nodejs/scripts');
         }
         catch (e) {
-            diagnostics.nodejsModuleScripts = e.message;
+            diagnostics.nodejsModuleError = e.message;
         }
-        // Test XML API queries for Node.js settings
+        // Test running plesk CLI directly via execAsync
+        diagnostics.pleskCliDirectTests = {};
+        for (const cmd of [
+            'plesk ext nodejs --info -domain janssen.systego.net',
+            '/usr/sbin/plesk ext nodejs --info -domain janssen.systego.net',
+            'sudo -n plesk ext nodejs --info -domain janssen.systego.net',
+            'which plesk',
+            'whoami'
+        ]) {
+            try {
+                const { stdout, stderr } = await execAsync(cmd);
+                diagnostics.pleskCliDirectTests[cmd] = { stdout: stdout.trim(), stderr: stderr.trim() };
+            }
+            catch (cmdErr) {
+                diagnostics.pleskCliDirectTests[cmd] = { error: cmdErr.message };
+            }
+        }
+        // Test executePleskCli with 'extension'
+        diagnostics.pleskExtensionCliTests = {};
+        for (const args of [
+            ['--call', 'nodejs', '--list'],
+            ['--list'],
+            ['-e', 'nodejs', 'cli.php', '--help'],
+            ['-e', 'nodejs', 'post-install.php', '--help']
+        ]) {
+            try {
+                const res = await (0, PleskService_1.executePleskCli)('extension', args);
+                diagnostics.pleskExtensionCliTests[args.join(' ')] = res;
+            }
+            catch (err) {
+                diagnostics.pleskExtensionCliTests[args.join(' ')] = err.message;
+            }
+        }
+        // Test XML API queries for Node.js
         try {
-            const { host, port, apiKey } = require('./PleskService').getPleskConfig();
-            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
-            const xmlQuery = `<?xml version="1.0" encoding="UTF-8"?>
+            const xmlQuery1 = `<?xml version="1.0" encoding="UTF-8"?>
+<packet>
+  <extension>
+    <call>
+      <nodejs>
+        <get-version>
+          <domain>janssen.systego.net</domain>
+        </get-version>
+      </nodejs>
+    </call>
+  </extension>
+</packet>`;
+            diagnostics.xmlGetVersion = await (0, PleskService_1.sendPleskRequest)(xmlQuery1);
+        }
+        catch (xmlErr) {
+            diagnostics.xmlGetVersionError = xmlErr.message;
+        }
+        try {
+            const xmlQuery2 = `<?xml version="1.0" encoding="UTF-8"?>
 <packet>
   <extension>
     <call>
@@ -967,40 +1017,10 @@ const diagnoseClient = async (req, res) => {
     </call>
   </extension>
 </packet>`;
-            const xmlRes = await axios_1.default.post(`https://${host}:${port}/enterprise/control/agent.php`, xmlQuery, {
-                headers: { 'Content-Type': 'text/xml', 'KEY': apiKey },
-                httpsAgent,
-            });
-            diagnostics.janssenNodeJsXml = xmlRes.data;
+            diagnostics.xmlGet = await (0, PleskService_1.sendPleskRequest)(xmlQuery2);
         }
         catch (xmlErr) {
-            diagnostics.janssenNodeJsXmlError = xmlErr.message;
-        }
-        try {
-            const { host, port, apiKey } = require('./PleskService').getPleskConfig();
-            const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
-            const xmlAuto = `<?xml version="1.0" encoding="UTF-8"?>
-<packet>
-  <extension>
-    <call>
-      <nodejs>
-        <set>
-          <domain>${clientName}.systego.net</domain>
-          <app_root>/subdomains/${clientName}</app_root>
-          <startup_file>server.js</startup_file>
-        </set>
-      </nodejs>
-    </call>
-  </extension>
-</packet>`;
-            const autoRes = await axios_1.default.post(`https://${host}:${port}/enterprise/control/agent.php`, xmlAuto, {
-                headers: { 'Content-Type': 'text/xml', 'KEY': apiKey },
-                httpsAgent,
-            });
-            diagnostics.xmlSetResult = autoRes.data;
-        }
-        catch (e) {
-            diagnostics.xmlSetError = e.message;
+            diagnostics.xmlGetError = xmlErr.message;
         }
         // --- AUTO-FIX IF REQUESTED ---
         if (fix) {
