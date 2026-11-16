@@ -14,7 +14,7 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 /**
  * Read Plesk config at call time (after dotenv has loaded).
  */
-function getPleskConfig() {
+export function getPleskConfig() {
   const host = process.env.PLESK_HOST || 'localhost';
   const port = process.env.PLESK_PORT || '8443';
   const apiKey = process.env.PLESK_API_KEY || '';
@@ -26,7 +26,7 @@ function getPleskConfig() {
 /**
  * Send an XML packet to the Plesk API.
  */
-async function sendPleskRequest(xmlPacket: string): Promise<string> {
+export async function sendPleskRequest(xmlPacket: string): Promise<string> {
   const { apiKey, apiUrl } = getPleskConfig();
 
   if (!apiKey) {
