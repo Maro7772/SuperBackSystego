@@ -134,21 +134,30 @@ async function provisionNewClient(clientName, dbConfig, logoBase64, superSystego
                 catch (feXmlErr) {
                     console.warn(`[Provisioning] XML enableNodeJs for frontend warning: ${feXmlErr.message}`);
                 }
-                // 3. Auto-configure and update Node.js Application Root (/subdomains/<clientName>) and Startup File (server.js)
-                for (const cmd of [
-                    `plesk ext nodejs --update -domain ${frontendSubdomainUrl} -app-root /subdomains/${clientName} -startup-file server.js`,
-                    `/usr/sbin/plesk ext nodejs --update -domain ${frontendSubdomainUrl} -app-root /subdomains/${clientName} -startup-file server.js`,
-                    `plesk ext nodejs --auto-configure -domain ${frontendSubdomainUrl}`,
-                    `/usr/sbin/plesk ext nodejs --auto-configure -domain ${frontendSubdomainUrl}`,
-                ]) {
-                    try {
-                        await execAsync(cmd);
-                        console.log(`[Provisioning] ✅ Configured frontend Node.js via: ${cmd}`);
-                        break;
-                    }
-                    catch (e) {
-                        console.warn(`[Provisioning] CLI command warning (${cmd}): ${e.message}`);
-                    }
+                // 3. Auto-configure and update Node.js Application Root (/subdomains/<clientName>) and Startup File (server.js) via Plesk REST CLI (Root Privileges)
+                try {
+                    await (0, PleskService_1.executePleskCli)('extension', [
+                        '--call', 'nodejs',
+                        '--update',
+                        '-domain', frontendSubdomainUrl,
+                        '-app-root', `/subdomains/${clientName}`,
+                        '-startup-file', 'server.js'
+                    ]);
+                    console.log(`[Provisioning] ✅ Configured frontend Node.js app-root and startup-file via Plesk REST CLI`);
+                }
+                catch (e) {
+                    console.warn(`[Provisioning] Plesk CLI nodejs --update warning: ${e.message}`);
+                }
+                try {
+                    await (0, PleskService_1.executePleskCli)('extension', [
+                        '--call', 'nodejs',
+                        '--auto-configure',
+                        '-domain', frontendSubdomainUrl
+                    ]);
+                    console.log(`[Provisioning] ✅ Auto-configured frontend Node.js via Plesk REST CLI`);
+                }
+                catch (e) {
+                    console.warn(`[Provisioning] Plesk CLI nodejs --auto-configure warning: ${e.message}`);
                 }
                 // Copy node_modules from master frontend if available, otherwise npm install
                 try {
@@ -561,12 +570,6 @@ async function generateFrontendHtaccess(destDir) {
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^ecommerce/(.*)$ /ecommerce/index.html [L]
-
-    # 5. Fallback to root index.html for main project (SPA)
-    RewriteCond %{REQUEST_URI} !^/(point-of-sale|admin-login|ecommerce)
-    RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteCond %{REQUEST_FILENAME} !-d
-    RewriteRule ^(.*)$ /index.html [L]
 </IfModule>
     `.trim();
     await promises_1.default.writeFile(htaccessPath, content, 'utf-8');
@@ -1047,7 +1050,14 @@ const diagnoseClient = async (req, res) => {
             catch (shimErr) {
                 diagnostics.fixResults.createdAppJsShim = `Error: ${shimErr.message}`;
             }
-            // 2. Fix Frontend Permissions & Document Root
+            // 2. Fix Frontend Permissions, .htaccess & Document Root
+            try {
+                await generateFrontendHtaccess(frontendDestDir);
+                diagnostics.fixResults.frontendHtaccess = "Regenerated .htaccess without infinite index.html rewrite loop";
+            }
+            catch (htErr) {
+                diagnostics.fixResults.frontendHtaccess = `Error: ${htErr.message}`;
+            }
             try {
                 await execAsync(`chmod -R 755 ${frontendDestDir}`);
                 await execAsync(`chown -R systego:psacln ${frontendDestDir}`);
@@ -1066,27 +1076,25 @@ const diagnoseClient = async (req, res) => {
             catch (siteErr) {
                 diagnostics.fixResults.frontendSiteWwwRoot = `Error: ${siteErr.message}`;
             }
-            // 2.5. Enable Node.js and Auto-configure on Frontend
+            // 2.5. Enable Node.js and Auto-configure on Frontend via Root REST CLI
             try {
                 try {
                     await (0, PleskService_1.enableNodeJsOnDomain)(clientName);
                 }
                 catch { }
-                let configuredCmd = 'none';
-                for (const cmd of [
-                    `plesk ext nodejs --update -domain ${clientName}.systego.net -app-root /subdomains/${clientName} -startup-file server.js`,
-                    `/usr/sbin/plesk ext nodejs --update -domain ${clientName}.systego.net -app-root /subdomains/${clientName} -startup-file server.js`,
-                    `plesk ext nodejs --auto-configure -domain ${clientName}.systego.net`,
-                    `/usr/sbin/plesk ext nodejs --auto-configure -domain ${clientName}.systego.net`,
-                ]) {
-                    try {
-                        await execAsync(cmd);
-                        configuredCmd = cmd;
-                        break;
-                    }
-                    catch { }
-                }
-                diagnostics.fixResults.frontendNodeJs = `Configured via CLI: ${configuredCmd}`;
+                const updateRes = await (0, PleskService_1.executePleskCli)('extension', [
+                    '--call', 'nodejs',
+                    '--update',
+                    '-domain', `${clientName}.systego.net`,
+                    '-app-root', `/subdomains/${clientName}`,
+                    '-startup-file', 'server.js'
+                ]).catch((e) => ({ error: e.message }));
+                const autoRes = await (0, PleskService_1.executePleskCli)('extension', [
+                    '--call', 'nodejs',
+                    '--auto-configure',
+                    '-domain', `${clientName}.systego.net`
+                ]).catch((e) => ({ error: e.message }));
+                diagnostics.fixResults.frontendNodeJs = { updateRes, autoRes };
             }
             catch (fnErr) {
                 diagnostics.fixResults.frontendNodeJs = `Error: ${fnErr.message}`;
