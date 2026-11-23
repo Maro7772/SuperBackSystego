@@ -11,6 +11,7 @@ import GatewayRouter from "../../utils/dbGateway";
 import OperationReportRouter from "./OperationReportRoutes";
 import PaymentApprovalRouter from "./paymentApprovalRoutes";
 import router from "./clientRoutes";
+import UpdaterRouter from "../../services/updater/updaterRoutes";
 //import { authenticated } from "../../middlewares/authenticated";
 //import {  authorizeRoles } from "../../middlewares/authorized";
 
@@ -29,5 +30,6 @@ route.use("/theme-categories", ThemeCategoryRoutes);
 route.use("/db", GatewayRouter);
 route.use("/operation-reports", OperationReportRouter);
 route.use("/payments", PaymentApprovalRouter);
+route.use("/updater", UpdaterRouter);
 
 export default route;
