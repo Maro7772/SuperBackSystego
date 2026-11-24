@@ -144,6 +144,9 @@ export async function provisionNewClient(
                         if (hasMasterFeNm) {
                             console.log(`[Provisioning] Copying node_modules cache for frontend...`);
                             await execAsync(`cp -a ${masterFeNm} ${frontendDestDir}/`);
+                        } else if (await fs.access('/var/www/vhosts/systego.net/subdomains/janssen/node_modules').then(() => true).catch(() => false)) {
+                            console.log(`[Provisioning] Copying node_modules from janssen reference...`);
+                            await execAsync(`cp -a /var/www/vhosts/systego.net/subdomains/janssen/node_modules ${frontendDestDir}/`);
                         } else {
                             console.log(`[Provisioning] Running npm install in frontend ${frontendDestDir}...`);
                             await execAsync('npm install', { cwd: frontendDestDir });
@@ -731,32 +734,53 @@ async function replaceClientLogo(destDir: string, logoBase64: string) {
  * directly inside the pre-compiled JS and HTML files.
  */
 async function injectApiUrlIntoBundle(dirPath: string, newApiUrl: string) {
-    const oldUrlBase = 'https://bcknd.systego.net';
-
-    // Some React apps might use /api appended, some might not. 
-    // It's safest to just replace the base domain globally.
-    // NOTE: The POS project uses "Bcknd" (capital B), so we must match case-insensitively.
+    const oldUrls = ['https://bcknd.systego.net', 'https://api-janssen.systego.net'];
+    const clientMatch = newApiUrl.match(/https:\/\/api-([^.]+)\.systego\.net/);
+    const clientName = clientMatch ? clientMatch[1] : '';
 
     async function scanAndReplace(currentDir: string) {
-        const entries = await fs.readdir(currentDir, { withFileTypes: true });
+        let entries: any[];
+        try {
+            entries = await fs.readdir(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
 
         for (const entry of entries) {
             const fullPath = path.join(currentDir, entry.name);
 
             if (entry.isDirectory()) {
+                if (entry.name === 'node_modules' || entry.name === 'node_modules.update-backup' || entry.name === 'cache') {
+                    continue;
+                }
                 await scanAndReplace(fullPath);
             } else if (entry.isFile() && (entry.name.endsWith('.js') || entry.name.endsWith('.html') || entry.name.endsWith('.json') || entry.name === '.env')) {
                 try {
                     let content = await fs.readFile(fullPath, 'utf8');
+                    let modified = false;
 
-                    // Case-insensitive check to catch both "bcknd" and "Bcknd"
-                    if (content.toLowerCase().includes(oldUrlBase.toLowerCase())) {
-                        // Replace all occurrences globally, case-insensitive
-                        const regex = new RegExp(oldUrlBase.replace(/[.*\/+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-                        content = content.replace(regex, newApiUrl);
+                    for (const oldUrl of oldUrls) {
+                        if (content.toLowerCase().includes(oldUrl.toLowerCase())) {
+                            const regex = new RegExp(oldUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                            content = content.replace(regex, newApiUrl);
+                            modified = true;
+                        }
+                    }
 
+                    if (clientName && (fullPath.includes('.next') || entry.name.endsWith('.json') || entry.name.endsWith('.js'))) {
+                        if (content.includes('/subdomains/janssen')) {
+                            content = content.replace(/\/subdomains\/janssen/g, `/subdomains/${clientName}`);
+                            modified = true;
+                        }
+                        if (content.includes('/httpdocs')) {
+                            content = content.replace(/\/httpdocs/g, `/subdomains/${clientName}`);
+                            modified = true;
+                        }
+                    }
+
+                    if (modified) {
                         await fs.writeFile(fullPath, content, 'utf8');
-                        console.log(`[Provisioning] Injected new API URL into: ${entry.name}`);
+                        console.log(`[Provisioning] Injected new API URL/paths into: ${entry.name}`);
                     }
                 } catch (err: any) {
                     console.warn(`[Provisioning] Skipping file ${entry.name} during injection: ${err.message}`);
@@ -766,6 +790,14 @@ async function injectApiUrlIntoBundle(dirPath: string, newApiUrl: string) {
     }
 
     await scanAndReplace(dirPath);
+
+    // Clear .next/cache to guarantee clean startup
+    try {
+        const nextCacheDir = path.join(dirPath, '.next', 'cache');
+        await fs.rm(nextCacheDir, { recursive: true, force: true });
+        console.log(`[Provisioning] Cleared .next/cache for ${dirPath}`);
+    } catch {}
+
     console.log(`[Provisioning] Finished injecting ${newApiUrl} into compiled React bundles.`);
 }
 
