@@ -734,9 +734,25 @@ async function replaceClientLogo(destDir: string, logoBase64: string) {
  * directly inside the pre-compiled JS and HTML files.
  */
 async function injectApiUrlIntoBundle(dirPath: string, newApiUrl: string) {
-    const oldUrls = ['https://bcknd.systego.net', 'https://api-janssen.systego.net'];
-    const clientMatch = newApiUrl.match(/https:\/\/api-([^.]+)\.systego\.net/);
+    const oldUrls = [
+        'https://bcknd.systego.net',
+        'http://bcknd.systego.net',
+        'https://api-janssen.systego.net',
+        'http://api-janssen.systego.net',
+    ];
+    const clientMatch = newApiUrl.match(/https?:\/\/api-([^.]+)\.systego\.net/);
     const clientName = clientMatch ? clientMatch[1] : '';
+    const skipDirs = new Set([
+        'node_modules',
+        'node_modules.update-backup',
+        'cache',
+        '.cache',
+        '.turbo',
+        '.git',
+        'tmp',
+        'uploads',
+        'logs',
+    ]);
 
     async function scanAndReplace(currentDir: string) {
         let entries: any[];
@@ -750,7 +766,7 @@ async function injectApiUrlIntoBundle(dirPath: string, newApiUrl: string) {
             const fullPath = path.join(currentDir, entry.name);
 
             if (entry.isDirectory()) {
-                if (entry.name === 'node_modules' || entry.name === 'node_modules.update-backup' || entry.name === 'cache') {
+                if (skipDirs.has(entry.name)) {
                     continue;
                 }
                 await scanAndReplace(fullPath);
